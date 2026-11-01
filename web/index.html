@@ -3,114 +3,101 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>Prince of Persia: The Two Thrones</title>
 <style>
   :root {
-    --bg: #070b08; --fg: #eef4ef; --muted: #9fb3a5; --faint: #6f8576;
-    --accent: #34b866; --accent-hi: #45cf79; --ball: #d23a2f;
-    --card: rgba(255, 255, 255, .055); --card-hi: rgba(255, 255, 255, .09); --line: rgba(255, 255, 255, .12);
-    --field: rgba(0, 0, 0, .28); --radius: 14px;
+    --bg: #0a0c12; --fg: #f3ecdc; --muted: #b7ad98; --faint: #7d7766;
+    --gold: #d9ad55; --gold-hi: #f0c970; --gold-lo: #8c6a28; --ember: #c8502e;
+    --card: rgba(255, 244, 220, .05); --card-hi: rgba(255, 244, 220, .09); --line: rgba(240, 201, 112, .22);
+    --field: rgba(0, 0, 0, .35); --radius: 14px;
+    --serif: "Cinzel", "Trajan Pro", "Palatino Linotype", Palatino, Georgia, serif;
     color-scheme: dark;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
-    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   main { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 12px; padding: 16px; }
-  .credit { color: var(--muted); font-size: 13px; text-align: center; }
-  .credit a { color: var(--accent-hi); text-decoration: underline; text-underline-offset: 2px; }
-  .credit a:hover { color: var(--fg); }
+  .credit { color: var(--faint); font-size: 12.5px; text-align: center; max-width: 70ch; }
   /* The 4:3 stage is centred. On viewports wide enough to fit a side-panel reference without crowding
      the stage, 440px is reserved symmetrically (220 each side) so the panel sits in that gap and the
-     stage stays centred rather than off-set. On narrow viewports the panel is hidden and the stage uses
-     the full width. The .kbd-off body class (set when the player dismisses the panel) frees the space. */
+     stage stays centred rather than off-set. The .kbd-off body class (set when the player dismisses the
+     panel) frees the space. */
   #stage { position: relative; width: min(100%, calc((100vh - 72px) * 4 / 3)); aspect-ratio: 4 / 3; background: #000;
-    border-radius: 12px; overflow: hidden; box-shadow: 0 30px 80px rgba(0, 0, 0, .55); }
+    border-radius: 14px; overflow: hidden; border: 1px solid var(--line);
+    box-shadow: 0 30px 90px rgba(0, 0, 0, .65), 0 0 0 1px rgba(0, 0, 0, .6), 0 0 60px rgba(217, 173, 85, .06); }
   @media (min-width: 1120px) {
     body:not(.kbd-off) #stage { width: min(calc(100% - 440px), calc((100vh - 72px) * 4 / 3)); }
   }
   canvas { width: 100%; height: 100%; display: block; cursor: none; }
   .hidden { display: none !important; }
+  :focus-visible { outline: 2px solid var(--gold-hi); outline-offset: 3px; }
 
-  /* the launcher: a floodlit pitch behind the menus */
+  /* the launcher: dusk over the palace, a slow glow, a thin gold frame */
   #panel { position: absolute; inset: 0; overflow: auto; display: grid; place-items: center; padding: 28px;
     background:
-      radial-gradient(120% 80% at 50% -10%, rgba(255, 255, 255, .10), transparent 60%),
-      repeating-linear-gradient(90deg, rgba(255, 255, 255, .025) 0 9%, transparent 9% 18%),
-      radial-gradient(140% 120% at 50% 110%, #123d22 0%, #0b2414 45%, #060d08 100%); }
-  .view { width: min(100%, 560px); text-align: center; animation: rise .25s ease-out; }
-  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
-  @media (prefers-reduced-motion: reduce) { .view { animation: none; } }
+      radial-gradient(60% 45% at 50% 108%, rgba(200, 80, 46, .38), transparent 70%),
+      radial-gradient(90% 60% at 50% -10%, rgba(217, 173, 85, .16), transparent 65%),
+      linear-gradient(180deg, #11142a 0%, #0e1020 45%, #0a0c12 100%); }
+  #panel::before { content: ""; position: absolute; inset: 12px; border: 1px solid var(--line); border-radius: 10px; pointer-events: none; }
+  #panel::after { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .5;
+    background: radial-gradient(2px 2px at 20% 30%, #fff8 50%, transparent 51%), radial-gradient(1.5px 1.5px at 72% 18%, #fff7 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 85% 42%, #fff6 50%, transparent 51%), radial-gradient(2px 2px at 38% 12%, #fff6 50%, transparent 51%),
+      radial-gradient(1.5px 1.5px at 10% 58%, #fff5 50%, transparent 51%), radial-gradient(1.5px 1.5px at 60% 8%, #fff7 50%, transparent 51%);
+    animation: twinkle 6s ease-in-out infinite alternate; }
+  @keyframes twinkle { to { opacity: .2; } }
+  .view { position: relative; z-index: 1; width: min(100%, 520px); text-align: center; animation: rise .35s ease-out; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+  @media (prefers-reduced-motion: reduce) { .view, #panel::after { animation: none; } }
 
-  .brand { margin: 0 auto 10px; font-size: 34px; font-weight: 800; letter-spacing: .02em; text-transform: uppercase; }
-  .tagline { margin: 0 0 26px; color: var(--muted); }
+  .eyebrow { margin: 0 0 6px; font: 600 12px/1 var(--serif); letter-spacing: .42em; text-transform: uppercase; color: var(--gold); }
+  .brand { margin: 0 auto 8px; font: 700 clamp(26px, 5.2vw, 40px)/1.12 var(--serif); letter-spacing: .06em; text-transform: uppercase;
+    background: linear-gradient(180deg, #fff3cf 0%, var(--gold-hi) 45%, var(--gold-lo) 100%); -webkit-background-clip: text; background-clip: text; color: transparent;
+    text-shadow: 0 2px 30px rgba(217, 173, 85, .25); }
+  .rule { display: flex; align-items: center; gap: 12px; margin: 14px auto 18px; max-width: 280px; color: var(--gold); }
+  .rule::before, .rule::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, transparent, var(--gold-lo)); }
+  .rule::after { transform: scaleX(-1); }
+  .rule i { width: 7px; height: 7px; transform: rotate(45deg); background: var(--gold); }
+  .tagline { margin: 0 0 22px; color: var(--muted); }
   .small { font-size: 13px; color: var(--faint); }
   p { margin: 8px 0; }
+  a { color: var(--gold-hi); text-underline-offset: 3px; }
 
-  /* home: the two big choices */
-  .choices { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  @media (max-width: 520px) { .choices { grid-template-columns: 1fr; } }
-  .choice { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 20px 18px; text-align: left;
-    border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); color: var(--fg); font: inherit;
-    cursor: pointer; transition: transform .12s ease, background .12s ease, border-color .12s ease; }
-  .choice:hover { transform: translateY(-2px); background: var(--card-hi); border-color: rgba(255, 255, 255, .22); }
-  .choice:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent-hi); outline-offset: 2px; }
-  .choice svg { width: 30px; height: 30px; color: var(--accent); }
-  .choice b { font-size: 18px; }
-  .choice span { color: var(--muted); font-size: 14px; }
-
-  /* buttons and fields */
+  /* buttons */
   button { font: inherit; cursor: pointer; border-radius: 10px; }
-  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 11px 20px; border: 0;
-    background: var(--accent); color: #04110a; font-weight: 700; transition: background .12s ease; }
-  .btn:hover { background: var(--accent-hi); }
-  .btn:disabled { opacity: .45; cursor: default; background: var(--accent); }
-  .btn.ghost { background: transparent; color: var(--fg); border: 1px solid var(--line); font-weight: 600; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 10px; padding: 12px 22px; border: 1px solid var(--gold);
+    background: linear-gradient(180deg, #f0c970, #c9983e); color: #1a1205; font-weight: 800; letter-spacing: .02em;
+    box-shadow: 0 6px 24px rgba(217, 173, 85, .25), inset 0 1px 0 #fff6; transition: transform .12s ease, box-shadow .12s ease, filter .12s ease; }
+  .btn:hover { transform: translateY(-1px); filter: brightness(1.07); box-shadow: 0 10px 30px rgba(217, 173, 85, .35), inset 0 1px 0 #fff6; }
+  .btn:active { transform: translateY(0); }
+  .btn.ghost { background: transparent; color: var(--fg); border-color: var(--line); box-shadow: none; font-weight: 600; }
   .btn.ghost:hover { background: var(--card-hi); }
-  .back { position: absolute; top: 16px; left: 16px; padding: 6px 12px; border: 0; background: transparent; color: var(--muted); }
-  .back:hover { color: var(--fg); }
-  input, select { font: inherit; color: var(--fg); background: var(--field); border: 1px solid var(--line); border-radius: 10px;
-    padding: 10px 12px; min-width: 0; }
-  input::placeholder { color: var(--faint); }
-  label.field { display: grid; gap: 6px; text-align: left; font-size: 13px; color: var(--muted); }
+  .play { font: 700 17px/1 var(--serif); letter-spacing: .24em; text-transform: uppercase; padding: 17px 44px; border-radius: 12px; }
+  .play svg { width: 18px; height: 18px; fill: currentColor; }
+  .linkbtn { background: none; border: 0; padding: 4px 6px; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; font-size: 13px; }
+  .linkbtn:hover { color: var(--gold-hi); }
 
-  .card { padding: 18px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); text-align: left; }
-  .card h2 { margin: 0 0 4px; font-size: 16px; }
-  .stack { display: grid; gap: 14px; }
-  .row { display: flex; gap: 10px; }
-  .row > input { flex: 1; }
-  .or { display: flex; align-items: center; gap: 12px; color: var(--faint); font-size: 13px; }
-  .or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
-  #np-code { text-transform: uppercase; letter-spacing: .15em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  details { margin-top: 12px; color: var(--muted); font-size: 13px; }
-  details summary { cursor: pointer; width: fit-content; }
-  details label { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
-  details select { flex: 1; padding: 7px 10px; }
-  .msg { min-height: 1.5em; color: #f2b8a8; font-size: 14px; }
-
-  /* lobby */
-  .code { font: 800 clamp(30px, 6vw, 42px)/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .18em; margin: 6px 0 2px; }
-  .players { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-  .players li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px; background: var(--field); text-align: left; }
-  .players li.empty { color: var(--faint); border: 1px dashed var(--line); background: transparent; }
-  .avatar { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; flex: none; font-weight: 700;
-    background: #1d5a33; color: #d8f5e2; }
-  .players .who { flex: 1; min-width: 0; }
-  .players .who b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .players .who small { color: var(--faint); }
-  .tag { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 2px 8px; border-radius: 99px;
-    background: var(--card-hi); color: var(--muted); }
-  .spinner { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--line);
-    border-top-color: var(--accent); animation: spin .9s linear infinite; vertical-align: -1px; margin-right: 6px; }
-  @keyframes spin { to { transform: rotate(1turn); } }
+  /* home */
+  .facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 26px 0 18px; }
+  @media (max-width: 480px) { .facts { grid-template-columns: 1fr; } }
+  .fact { padding: 12px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--card); font-size: 13px; color: var(--muted); }
+  .fact b { display: block; color: var(--fg); font-size: 13.5px; margin-bottom: 2px; }
+  .fact svg { width: 22px; height: 22px; color: var(--gold); margin-bottom: 4px; }
 
   /* loading */
-  progress { width: min(100%, 320px); height: 8px; margin-top: 14px; appearance: none; border: 0; border-radius: 99px;
+  progress { width: min(100%, 340px); height: 6px; margin-top: 14px; appearance: none; border: 0; border-radius: 99px;
     overflow: hidden; background: var(--field); }
   progress::-webkit-progress-bar { background: var(--field); }
-  progress::-webkit-progress-value { background: var(--accent); border-radius: 99px; }
-  progress::-moz-progress-bar { background: var(--accent); }
+  progress::-webkit-progress-value { background: linear-gradient(90deg, var(--gold-lo), var(--gold-hi)); border-radius: 99px; }
+  progress::-moz-progress-bar { background: var(--gold); }
   #status { font-variant-numeric: tabular-nums; color: var(--muted); max-width: 52ch; margin-inline: auto; }
+  .dots { display: inline-flex; gap: 6px; margin: 18px 0 6px; }
+  .dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--gold); animation: pulse 1.2s ease-in-out infinite; }
+  .dots i:nth-child(2) { animation-delay: .15s; } .dots i:nth-child(3) { animation-delay: .3s; }
+  @keyframes pulse { 0%, 80%, 100% { opacity: .25; transform: scale(.8); } 40% { opacity: 1; transform: scale(1.1); } }
+  body.ready .dots, body.err .dots, body:has(#pick:not(.hidden)) .dots { display: none; }
+  #help { max-width: 46ch; margin: 18px auto 0; }
 
   /* fullscreen: the stage fills the screen and the game letterboxes itself inside the canvas */
   #stage:fullscreen { width: 100vw; height: 100vh; aspect-ratio: auto; border-radius: 0; box-shadow: none; }
@@ -125,10 +112,6 @@
     background: rgba(0, 0, 0, .65); color: #fff; font-size: 13px; pointer-events: none; transition: opacity .4s ease; }
   kbd { font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 1px 6px; border-radius: 5px;
     border: 1px solid rgba(255, 255, 255, .25); background: rgba(255, 255, 255, .08); }
-  #netstatus { position: absolute; top: 10px; right: 10px; padding: 4px 10px; border-radius: 99px; background: rgba(0, 0, 0, .6);
-    color: #fff; font: 12px/1.5 ui-sans-serif, system-ui, sans-serif; pointer-events: none; backdrop-filter: blur(4px); }
-  #netstatus.bad { background: rgba(170, 20, 20, .88); }
-
   /* keyboard cheat sheet: shows beside the stage when the viewport has room, because in-game prompts
      use controller glyphs (triangle/circle/×/square, L1, R1) that keyboard players would otherwise have
      to guess at. Hidden in fullscreen, on narrow viewports and by choice (remembered in localStorage). */
@@ -167,7 +150,6 @@
   #kbd-show:hover { color: var(--fg); background: rgba(10, 18, 12, .92); }
   #kbd-show svg { width: 18px; height: 18px; }
 </style>
-
 </head>
 <body>
 <main>
@@ -180,35 +162,48 @@
     <div id="fstip" class="hidden">Press <kbd>Alt</kbd> + <kbd>Enter</kbd> for fullscreen</div>
     <div id="panel">
 
-      <!-- loading: browser checks, the first-visit download, errors -->
+      <!-- loading: browser checks, the first-visit copy, errors -->
       <section id="view-loading" class="view">
-        <h1 class="brand">Prince of Persia: The Two Thrones</h1>
-        <p id="status">Checking your browser…</p>
+        <p class="eyebrow">Prince of Persia</p>
+        <h1 class="brand">The Two Thrones</h1>
+        <div class="rule"><i></i></div>
+        <div class="dots" aria-hidden="true"><i></i><i></i><i></i></div>
+        <p id="status" role="status" aria-live="polite">Checking your browser…</p>
         <progress id="progress" class="hidden" max="1" value="0"></progress>
         <div>
-          <label id="pick" class="btn hidden" style="margin-top:16px">Choose game folder
+          <label id="pick" class="btn hidden" style="margin-top:18px">Choose game folder
             <input id="folder" type="file" webkitdirectory multiple hidden>
           </label>
         </div>
-        <p id="help" class="hidden small">Pick your own Prince of Persia: The Two Thrones install folder: the one that holds <b>POP3.EXE</b>, <b>POPData.bf</b> and <b>Sound</b>. It is copied
+        <p id="help" class="hidden small">Pick your own <i>Prince of Persia: The Two Thrones</i> install folder: the one that holds <b>POP3.EXE</b>, <b>POPData.bf</b> and <b>Sound</b>. It is copied
           into this browser's private storage once and never leaves your computer.</p>
       </section>
 
       <!-- home -->
       <section id="view-home" class="view hidden">
-        <h1 class="brand">Prince of Persia: The Two Thrones</h1>
-        <p class="tagline">Ready when you are.</p>
-        <div class="choices">
-          <button id="play" class="choice">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M14.5 3.5l6 6-9.5 9.5-3 .5-3.5-3.5.5-3z"/><path d="M4.5 19.5L3 21"/><circle cx="18.5" cy="18.5" r="2"/></svg>
-            <b>Play</b>
-            <span>Single player, with the keyboard or a controller.</span>
-          </button>
+        <p class="eyebrow">Prince of Persia</p>
+        <h1 class="brand">The Two Thrones</h1>
+        <div class="rule"><i></i></div>
+        <p class="tagline">Your game files are ready. The adventure runs right here in the browser.</p>
+        <button id="play" class="btn play">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12-7.5a1 1 0 0 0 0-1.72l-12-7.5A1 1 0 0 0 7 4.5z"/></svg>
+          Play
+        </button>
+        <div class="facts">
+          <div class="fact">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M7 14h10"/></svg>
+            <b>Keyboard</b>W A S D, Space to jump
+          </div>
+          <div class="fact">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8h12a3 3 0 0 1 3 3.2l-.6 5A2.5 2.5 0 0 1 16 17l-1.5-2h-5L8 17a2.5 2.5 0 0 1-4.4-.8l-.6-5A3 3 0 0 1 6 8z"/><path d="M8 11v3M6.5 12.5h3M16 11.5h.01M18 13.5h.01"/></svg>
+            <b>Controller</b>Plug in and press any button
+          </div>
+          <div class="fact">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+            <b>Fullscreen</b><kbd>Alt</kbd> + <kbd>Enter</kbd>
+          </div>
         </div>
-        <p class="small" style="margin-top:22px">Use a controller, or the keyboard: arrows to move, S to select.<br>
-          Fullscreen: <kbd>Alt</kbd> + <kbd>Enter</kbd> (<kbd>⌥</kbd> + <kbd>Enter</kbd> on Mac) or the button in the corner.</p>
-        <p class="small"><a href="#" id="reset">Use a different game folder</a></p>
+        <p class="small"><button id="reset" class="linkbtn" type="button">Use a different game folder</button></p>
       </section>
 
     </div>

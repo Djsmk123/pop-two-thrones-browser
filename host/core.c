@@ -308,21 +308,11 @@ uint64_t guest_time_100ns(void) {
     /* 2006-01-01 00:00 UTC in FILETIME units, plus the virtual clock */
     return 127804032000000000ull + (uint64_t)((guest_seconds() - 60.0) * 1e7);
 }
-/* Present: wait for the next vsync tick (exact multiples of 1/60 s); online, the frame lasts the time the
-   host measured for it (netplay.c), counted from the previous frame's boundary. */
+/* Present: wait for the next vsync tick (exact multiples of 1/60 s); */
 void vclock_frame(void) {
     if (!deterministic() || !on_game_thread()) return;
     extern int sched_wait(int (*)(void *), void *, uint64_t, uint64_t (*)(void));
-    extern uint32_t netplay_frame_dt_us(void);
     uint64_t now = __atomic_load_n(&g_vtime_us, __ATOMIC_RELAXED);
-    uint32_t dt = netplay_frame_dt_us();
-    if (dt) {
-        static uint64_t boundary;
-        boundary += dt;
-        if (boundary < now) boundary = now;   /* the frame already took longer in game time (loading) */
-        sched_wait(NULL, NULL, boundary, NULL);
-        return;
-    }
     uint64_t k = now * 60ull / 1000000ull + 1;
     sched_wait(NULL, NULL, (k * 1000000ull + 59ull) / 60ull, NULL);
 }

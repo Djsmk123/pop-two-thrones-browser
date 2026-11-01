@@ -1,5 +1,5 @@
 /* Deterministic scheduler (RC_DETERMINISTIC=1): makes a run a function of its inputs alone, the basis
- * for lockstep netplay (every peer simulates the same match from the same inputs).
+ * for deterministic runs (tests and determinism checks).
  *
  * Exactly one participant runs at a time: guest threads, the multimedia timer thread and the sound mixer.
  * The running one keeps going until it blocks (Sleep, a wait, a contended critical section, Present) or

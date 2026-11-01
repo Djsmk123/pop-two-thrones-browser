@@ -376,8 +376,6 @@ W(dev_Present) {
     extern void dump_tick(uint32_t frame);
     input_script_tick(d->frame);
     dump_tick(d->frame);
-    extern void netplay_frame(uint32_t frame, uint64_t (*state_hash)(void));
-    netplay_frame(d->frame, state_hash_globals);   /* lockstep: exchange and apply pad inputs */
     vclock_frame();
     state_hash_tick(d->frame);
     static int exit_frame = -1;   /* RC_EXIT_FRAME=N: quit after frame N (benchmarks, determinism checks) */

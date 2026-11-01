@@ -12,7 +12,7 @@ const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const OPFS_DIR = 'rcgame';
 const MARKER = '.installed.json';   // { version } once every file is copied
-const status = (t) => { $('status').textContent = t; };
+const status = (t) => { $('status').textContent = t; document.body.classList.toggle('err', /^Error|no WebGPU|cross-origin|no usable|no Origin/.test(t)); };
 // the launcher's screens (index.html): loading, home
 const show = (view) => { for (const v of document.querySelectorAll('#panel .view')) v.classList.toggle('hidden', v.id !== 'view-' + view); };
 const fail = (e) => { status('Error: ' + e.message); $('panel').classList.remove('hidden'); show('loading'); };
@@ -283,6 +283,7 @@ async function boot() {
     console.warn('WebGPU: only a software (fallback) adapter is available; the game will be slow');
   if (!navigator.storage?.getDirectory) { status('This browser has no Origin Private File System.'); return; }
   const ready = () => {
+    document.body.classList.add('ready');
     show('home');
     if (params.has('autoplay')) $('play').click();
   };
@@ -298,7 +299,7 @@ async function boot() {
     $('help').classList.remove('hidden');
   };
 
-  $('reset').onclick = (e) => { e.preventDefault(); show('loading'); showPicker('Choose your Two Thrones folder.'); };
+  $('reset').onclick = () => { show('loading'); showPicker('Choose your Two Thrones folder.'); };
   if (!(await readMarker())) {
     if (await importFromServer().catch((err) => { status(err.message); return false; })) { ready(); return; }
     showPicker('Choose your Two Thrones folder to start.');

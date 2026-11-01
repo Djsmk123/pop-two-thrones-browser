@@ -14,18 +14,13 @@
 void dinput_key(uint8_t dik, int down);
 void dinput_mouse_button(int b, int down);
 void dinput_mouse_move(int dx, int dy);
-/* Netplay (netplay.c): only pads are shared between peers, so keyboard and mouse don't reach the game
-   (one peer's keys would desync the others); the page maps the keyboard onto the local pad instead. */
-int netplay_on(void);
-int netplay_local_pad(int idx, int connected, uint32_t buttons, const int32_t axis[4]);
-EXPORT void input_mouse_move(int dx, int dy) { if (!netplay_on()) dinput_mouse_move(dx, dy); }
+EXPORT void input_mouse_move(int dx, int dy) { dinput_mouse_move(dx, dy); }
 /* Gamepads, in the W3C "standard gamepad" layout (both SDL's GameController and the browser's Gamepad API
    map onto it): buttons bit 0-16 = A B X Y, LB RB, LT RT (digital), Back Start, L3 R3, d-pad up down left
    right, Guide; axes -32768..32767 (left x/y, right x/y; +y = down). */
 void dinput_pad(int idx, int connected, uint32_t std_buttons, const int32_t axis[4]);
 EXPORT void input_gamepad(int idx, int connected, uint32_t buttons, int lx, int ly, int rx, int ry) {
     const int32_t axis[4] = { lx, ly, rx, ry };
-    if (netplay_local_pad(idx, connected, buttons, axis)) return;
     dinput_pad(idx, connected, buttons, axis);
 }
 
@@ -131,7 +126,6 @@ static const KeyMap g_keymap[] = {
 };
 
 static void key_event_dik(uint8_t dik, int down) {
-    if (netplay_on()) return;
     for (size_t i = 0; i < sizeof g_keymap / sizeof g_keymap[0]; i++) {
         if (g_keymap[i].dik != dik) continue;
         dinput_key(dik, down);
@@ -141,8 +135,6 @@ static void key_event_dik(uint8_t dik, int down) {
     }
 }
 
-/* A key the lockstep applies on every peer alike (netplay.c carries Esc with the pad inputs): not
-   guarded like the physical keyboard below, which would desync. */
 void input_key_usage_sync(int usage, int down) {
     for (size_t i = 0; i < sizeof g_keymap / sizeof g_keymap[0]; i++) {
         if (g_keymap[i].usage != usage) continue;
@@ -155,13 +147,11 @@ void input_key_usage_sync(int usage, int down) {
 
 EXPORT void input_key_hid(int usage, int down) {
     LOG("[key] usage %d %s\n", usage, down ? "down" : "up");
-    if (netplay_on()) return;   /* online, the keyboard only drives the pad (web/loader.js) */
     input_key_usage_sync(usage, down);
 }
 
 EXPORT void input_mouse_button(int b, int down) {
     static const uint8_t vk[3] = { 0x01, 0x02, 0x04 };  /* VK_LBUTTON, VK_RBUTTON, VK_MBUTTON */
-    if (netplay_on()) return;
     dinput_mouse_button(b, down);
     g_keys[vk[b]] = (uint8_t)down;
     static const uint32_t msg_down[3] = { 0x201, 0x204, 0x207 };
