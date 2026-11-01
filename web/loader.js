@@ -228,6 +228,9 @@ async function startAudio(M) {
   const node = new AudioWorkletNode(ctx, 'rc-ring', { outputChannelCount: [2] });
   node.port.postMessage({ memory: M.wasmMemory, ring: M._rc_audio_ring() });
   node.connect(ctx.destination);
+  const tap = ctx.createMediaStreamDestination();   // the game's sound as a stream, so a page script can record video + audio (MediaRecorder)
+  node.connect(tap);
+  window.rcAudioStream = tap.stream;
   const resume = () => ctx.resume();
   window.addEventListener('pointerdown', resume);
   window.addEventListener('keydown', resume);
