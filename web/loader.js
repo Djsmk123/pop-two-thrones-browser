@@ -71,7 +71,10 @@ async function importFromPicker(fileList) {
   $('progress').classList.add('hidden');
 }
 
-// Local development: `serve.py --game <folder>` serves the player's own install at /game/; copy it without the file dialog.
+// `serve.py --game <folder>` serves the player's own install at /game/ (local development, or a tunnel with --key).
+// Small files are copied now. Big ones (pop3.bf, the sound archives, the movies) become full-size sparse files plus a
+// ".rcremote" marker, and host/remote.c fetches just the parts the game reads, with range requests, on first use.
+const REMOTE_MIN = 8e6;
 async function importFromServer() {
   let list;
   try {
@@ -84,16 +87,27 @@ async function importFromServer() {
   try { await root.removeEntry(OPFS_DIR, { recursive: true }); } catch {}
   await navigator.storage.persist?.();
   const dir = await gameDir(true);
-  const total = list.reduce((s, e) => s + e.size, 0);
+  const eager = list.filter((e) => e.size < REMOTE_MIN), lazy = list.filter((e) => e.size >= REMOTE_MIN);
+  const total = eager.reduce((s, e) => s + e.size, 0) || 1;
   let done = 0;
   $('progress').classList.remove('hidden');
-  for (const e of list) {
+  for (const e of eager) {
     status(`Copying ${e.path} (${mb(done)} / ${mb(total)} MB)`);
     const resp = await fetch('game/' + e.path.split('/').map(encodeURIComponent).join('/'));
+    if (!resp.ok) throw new Error(`${e.path}: ${resp.status}`);
     const w = await (await fileHandle(dir, e.path, true)).createWritable();
     await resp.body.pipeTo(w);
     done += e.size;
     $('progress').value = done / total;
+  }
+  status('Preparing the big game archives…');
+  for (const e of lazy) {
+    const w = await (await fileHandle(dir, e.path, true)).createWritable();
+    await w.truncate(e.size);
+    await w.close();
+    const m = await (await fileHandle(dir, e.path + '.rcremote', true)).createWritable();
+    await m.write(String(e.size));
+    await m.close();
   }
   const sig = list.map((e) => `${e.path}:${e.size}`).sort().join('\n');
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sig));
@@ -239,6 +253,7 @@ async function run() {
     preRun: [(m) => {
       if (params.has('mute')) m.ENV.RC_NO_AUDIO = '1';
       m.ENV.RC_EXE = params.get('exe') || 'POP3.EXE';
+      m.ENV.RC_GAME_URL = new URL('game/', location.href).href;   // where host/remote.c fetches on-demand files
       if (params.has('log')) m.ENV.RC_LOG = '1';
       if (params.has('pads')) m.ENV.RC_PADS = params.get('pads');
       if (params.has('queue')) m.ENV.RC_QUEUE = params.get('queue');

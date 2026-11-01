@@ -84,6 +84,36 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        rng = self.headers.get("Range", "")
+        path = urllib.parse.urlparse(self.path).path
+        if GAME and path.startswith("/game/") and rng.startswith("bytes="):
+            f = self.translate_path(self.path)
+            if os.path.isfile(f):
+                size = os.path.getsize(f)
+                lo, _, hi = rng[6:].partition("-")
+                start = int(lo) if lo else max(0, size - int(hi))
+                end = min(int(hi), size - 1) if lo and hi else size - 1
+                if start >= size or end < start:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.end_headers()
+                    return
+                self.send_response(206)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                self.send_header("Content-Length", str(end - start + 1))
+                self.end_headers()
+                with open(f, "rb") as fh:
+                    fh.seek(start)
+                    left = end - start + 1
+                    while left > 0:
+                        chunk = fh.read(min(left, 1 << 20))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        left -= len(chunk)
+                return
         super().do_GET()
 
     def translate_path(self, path):

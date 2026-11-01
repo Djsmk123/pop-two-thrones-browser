@@ -867,6 +867,7 @@ W(CreateFileA) {
     WinHandle *x = handle_get(h, H_FILE);
     x->fd = fd;
     snprintf(x->path, sizeof x->path, "%s", host);
+    if (!(fl & (O_WRONLY | O_RDWR | O_CREAT))) x->remote = remote_attach(host);
     set_error((disp == 4 || disp == 2) && exists ? ERROR_ALREADY_EXISTS : 0);
     RET(7, h);
 }
@@ -889,6 +890,7 @@ W(ReadFile) {
     /* Windows only returns short reads at end of file; host reads can stop early, so loop */
     uint32_t want = ARG(2), got = 0;
     ssize_t n = 0;
+    if (x->remote) remote_ensure(x->remote, (uint64_t)lseek(x->fd, 0, SEEK_CUR), want);
     while (got < want && (n = read(x->fd, HP(ARG(1) + got), want - got)) > 0) got += (uint32_t)n;
     if (ARG(3)) W32(ARG(3), got);
     static unsigned reads;
@@ -1073,6 +1075,7 @@ W(CreateFileMappingA) {
     uint32_t h = handle_new(H_MAPPING);
     WinHandle *m = handle_get(h, H_MAPPING);
     m->fd = f ? dup(f->fd) : -1;
+    m->remote = f ? f->remote : NULL;
     RET(6, h);
 }
 W(MapViewOfFile) {
@@ -1082,6 +1085,7 @@ W(MapViewOfFile) {
     fstat(m->fd, &st);
     uint32_t off = ARG(3), len = ARG(4) ? ARG(4) : (uint32_t)st.st_size - off;
     uint32_t a = guest_valloc(len);
+    if (m->remote) remote_ensure(m->remote, off, len);
     /* copy-in (views are only read by the game); loop: a single read may come back short */
     uint32_t got = 0;
     while (got < len) {

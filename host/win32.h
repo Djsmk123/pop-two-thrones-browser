@@ -54,9 +54,12 @@ enum HandleType { H_FREE, H_FILE, H_FIND, H_MAPPING, H_EVENT, H_MUTEX, H_SEMAPHO
 typedef struct {
     int type;
     int fd;              /* H_FILE */
+    void *remote;        /* H_FILE / H_MAPPING: on-demand file (host/remote.c) or NULL */
     void *ptr;           /* H_FIND: directory search state; sync objects: their host object */
     char path[1024];
 } WinHandle;
+void *remote_attach(const char *hostpath);
+void remote_ensure(void *remote, uint64_t off, uint64_t len);
 
 uint32_t handle_new(int type);
 WinHandle *handle_get(uint32_t h, int type);   /* NULL if not that type */

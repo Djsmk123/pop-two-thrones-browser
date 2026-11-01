@@ -305,3 +305,14 @@ dword-wide packed op (`psrad`, `packssdw`, `pcmpgtd`, `pmaddwd` inputs). Fixed b
 seconds with a discontinuity (2 samples), no saturation, RMS <= 0.18. MMX/SSE functions are skipped by `tests/difftest.py`
 (Unicorn lacks them), so the packed-integer helpers have no differential coverage; the earlier smoothing work (gain slew, fades,
 browser ring) stays as a second line of defence.
+
+## On-demand game files (range requests)
+
+`serve.py --game` now answers `Range` requests. In the browser, `importFromServer()` copies only files under 8 MB (about 20 MB in
+total) and turns the big ones (pop3.bf, sound.big, soundlocal.big, the Bink movies) into full-size sparse OPFS files plus a
+`<file>.rcremote` marker. `host/remote.c` (Emscripten only) fetches the 1 MiB chunks the game's `ReadFile`/`MapViewOfFile` touch with
+synchronous XHR range requests from the game thread (worker), writes them into the sparse file and records them in
+`<file>.rcchunks`, so each chunk is downloaded once. The page passes the base URL as `RC_GAME_URL` (read with `getenv`: the JS
+`ENV` object is per thread). Measured from an empty browser store: main menu after ~50 MB, ship-deck intro of level 1 after ~96 MB
+(pop3.bf 70, soundlocal.big 10, sound.big 16), against 1.5 GB for the full copy. The picker import (a folder chosen in the page)
+still copies everything.
