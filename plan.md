@@ -293,3 +293,15 @@ paced by the audio clock, so the ring slowly drifted into underruns (silence) or
 Fixes: per-sample gain slew (~2 ms) in `advance()`, a 192-frame fade-out after `Stop`, fade-in on `Play`; the web mixer now
 tops the ring up to ~80 ms instead of free-running, and the worklet waits for 1024 queued frames, fades out on underrun
 and fades back in.
+
+## The crackle/blasting root cause: `v_get` sign extension (runtime/simd.h)
+
+Recorded the mixer output (`RC_DUMP_AUDIO=file`, raw stereo float32 at 44.1 kHz) and analysed it: 44 of 82 seconds had thousands of
+sharp discontinuities per second and RMS 0.5-0.7, with runs of exactly full-scale samples. Traced the saturated runs back (Unlock
+-> DARE stream mixer at guest 0x8ba510, which sums sources as 32-bit with MMX and packs with `packssdw`): the 32-bit sums were
+zero-extended instead of sign-extended (negative samples became +65536-x, so sums exceeded 32767 and `packssdw` clipped them).
+Cause: `v_get(.., lane 4, signed)` returned `sgn ? (int32_t)v : v`, whose type is `uint32_t`, so the sign was lost for every
+dword-wide packed op (`psrad`, `packssdw`, `pcmpgtd`, `pmaddwd` inputs). Fixed by casting to `int64_t` first. After the fix: 1 of 82
+seconds with a discontinuity (2 samples), no saturation, RMS <= 0.18. MMX/SSE functions are skipped by `tests/difftest.py`
+(Unicorn lacks them), so the packed-integer helpers have no differential coverage; the earlier smoothing work (gain slew, fades,
+browser ring) stays as a second line of defence.

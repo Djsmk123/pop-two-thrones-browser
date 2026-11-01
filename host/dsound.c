@@ -154,6 +154,9 @@ static void mix_frames(float *out, int frames) {
         if (a > 0.7f) x = copysignf(0.7f + 0.3f * tanhf((a - 0.7f) / 0.3f), x);
         out[i] = x;
     }
+    static FILE *dump; static int dump_on = -1;   /* RC_DUMP_AUDIO=file: raw stereo float32 at 44.1 kHz, what the speakers get */
+    if (dump_on < 0) { dump_on = getenv("RC_DUMP_AUDIO") != NULL; if (dump_on) dump = fopen(getenv("RC_DUMP_AUDIO"), "wb"); }
+    if (dump) fwrite(out, sizeof(float), 2 * (size_t)frames, dump);
 }
 
 #define AQ_FRAMES 1024
