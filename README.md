@@ -5,6 +5,15 @@ A static recompilation of the PC game: `POP3.EXE` is translated from x86 to C (G
 DirectSound, a Bink stub and **Direct3D 9 on WebGPU** (a recorder/executor renderer). It runs natively on macOS and, built
 with Emscripten, in the browser.
 
+> **Disclaimer.** This is an independent, non-commercial technical experiment (static recompilation, a Windows API layer and a WebGPU
+> renderer). It is **not affiliated with, endorsed by or connected to Ubisoft**; *Prince of Persia* and *The Two Thrones* are
+> trademarks and copyrighted works of Ubisoft Entertainment. **This repository contains no game files, no game assets and no code
+> taken from the game's executable or data**; the generated C, the executable and the function list are gitignored and never
+> published. It works only with a **genuine copy of the game that you legitimately own**, which you supply yourself and which stays on
+> your computer (in your browser's private storage). It is **not for piracy and not for distributing the game or any of its content**:
+> do not host, share or serve game files to others, and do not use this project to do so. The software is provided as is, for
+> research and education, under the MIT license (covering only the original code in this repository).
+
 **No game files or game-derived code live in this repository.** You need your own legitimately obtained copy of the game
 (the executable is `POP3.EXE`, not the small `PrinceOfPersia.exe` launcher). Generated C, binaries and the function list are
 gitignored.
