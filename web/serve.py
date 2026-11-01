@@ -12,6 +12,9 @@ pages, so every response carries COOP/COEP headers.
 The page never downloads game files: the player picks their own game folder, which the browser copies
 into its private storage.
 
+--key makes /game/ require a secret (open the page once with ?key=<KEY>), for exposing the server through a tunnel
+without handing your game files to everyone who finds the link.
+
 --lan serves other devices on the same wifi. Browsers only enable WebGPU and SharedArrayBuffer on secure
 pages (https, or localhost), so --lan uses https with a throwaway self-signed certificate: the other device
 shows a warning once, accept it to continue. With --game, your game files are then readable by anyone on
@@ -34,6 +37,7 @@ BUILD = os.path.join(os.path.dirname(HERE), "build_web", "www")
 
 
 GAME = None
+KEY = None   # --key: /game/ is only served to browsers that opened the page with ?key=<KEY> (cookie)
 
 
 def game_list():
@@ -52,7 +56,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map, ".wasm": "application/wasm",
                       ".js": "text/javascript"}
 
+    def authorised(self):
+        if not KEY:
+            return True
+        if any(c.strip() == "rc_key=" + KEY for c in self.headers.get("Cookie", "").split(";")):
+            return True
+        return urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("key", [None])[0] == KEY
+
     def end_headers(self):
+        if KEY and urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("key", [None])[0] == KEY:
+            self.send_header("Set-Cookie", f"rc_key={KEY}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400")
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
@@ -60,6 +73,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):
+        if GAME and urllib.parse.urlparse(self.path).path.startswith("/game/") and not self.authorised():
+            self.send_error(403)
+            return
         if GAME and urllib.parse.urlparse(self.path).path == "/game/_list.json":
             body = json.dumps(game_list()).encode()
             self.send_response(200)
@@ -101,9 +117,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8007)
     ap.add_argument("--game", help="your game folder, served at /game/ for local development")
+    ap.add_argument("--key", help="with --game: only browsers that open the page with ?key=<KEY> can fetch /game/ (for a public tunnel)")
     ap.add_argument("--lan", action="store_true", help="listen on the local network (https, self-signed)")
     a = ap.parse_args()
-    global GAME
+    global GAME, KEY
+    KEY = a.key
     GAME = os.path.abspath(a.game) if a.game else None
     if a.lan:
         ip = lan_ip()
