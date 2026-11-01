@@ -12,12 +12,21 @@ pages, so every response carries COOP/COEP headers.
 The page never downloads game files: the player picks their own game folder, which the browser copies
 into its private storage.
 
-Usage: python3 web/serve.py [--port 8007] [--game <your game folder>]
+--lan serves other devices on the same wifi. Browsers only enable WebGPU and SharedArrayBuffer on secure
+pages (https, or localhost), so --lan uses https with a throwaway self-signed certificate: the other device
+shows a warning once, accept it to continue. With --game, your game files are then readable by anyone on
+that network while the server runs.
+
+Usage: python3 web/serve.py [--port 8007] [--game <your game folder>] [--lan]
 """
 import argparse
 import http.server
 import json
 import os
+import socket
+import ssl
+import subprocess
+import tempfile
 import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -70,15 +79,44 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return os.path.join(HERE, p.lstrip("/"))
 
 
+def lan_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))   # no packet is sent; this picks the interface with a route
+        return s.getsockname()[0]
+    finally:
+        s.close()
+
+
+def self_signed(ip):
+    d = tempfile.mkdtemp(prefix="rc-cert-")
+    key, crt = os.path.join(d, "key.pem"), os.path.join(d, "cert.pem")
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "30", "-keyout", key,
+                    "-out", crt, "-subj", "/CN=" + ip, "-addext", f"subjectAltName=IP:{ip},DNS:localhost,IP:127.0.0.1"],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return crt, key
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8007)
     ap.add_argument("--game", help="your game folder, served at /game/ for local development")
+    ap.add_argument("--lan", action="store_true", help="listen on the local network (https, self-signed)")
     a = ap.parse_args()
     global GAME
     GAME = os.path.abspath(a.game) if a.game else None
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
-    print(f"http://localhost:{a.port}/")
+    if a.lan:
+        ip = lan_ip()
+        srv = http.server.ThreadingHTTPServer(("0.0.0.0", a.port), Handler)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(*self_signed(ip))
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        print(f"On the other device (same wifi), open  https://{ip}:{a.port}/  and accept the certificate warning.")
+        if GAME:
+            print("Warning: your game files are served to this network while this runs.")
+    else:
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
+        print(f"http://localhost:{a.port}/")
     srv.serve_forever()
 
 
