@@ -153,6 +153,8 @@ static WGPUDevice g_dev;
 static WGPUQueue g_queue;
 static WGPUSurface g_surface;
 static WGPUTextureFormat g_surf_fmt;
+extern int g_game_aspect_w, g_game_aspect_h;   /* the game's back buffer shape (host/core.c): 4:3 by default, 16:9 at 1080p */
+static int g_asp_w = 4, g_asp_h = 3;
 static int g_surf_w, g_surf_h;   /* back buffer: the largest 4:3 area that fits the window */
 static int g_win_w, g_win_h;     /* window (swap chain) size; the back buffer is centred in it */
 static WGPUTexture g_depth;
@@ -164,6 +166,10 @@ static WGPUBindGroupLayout g_bgl_u, g_bgl_t;
 static WGPUPipelineLayout g_pl;
 static WGPUBuffer g_vbuf, g_ubuf;
 static uint32_t g_vpos, g_upos;
+/* Per-draw vertex and uniform data is staged in CPU memory and sent with one wgpuQueueWriteBuffer per buffer before each submit
+   (two writes per draw cost more than everything else in a frame). g_vflushed/g_uflushed: how much has gone out already. */
+static uint8_t *g_vstage, *g_ustage;
+static uint32_t g_vflushed, g_uflushed;
 #define VBUF_SIZE (32u << 20)
 #define UBUF_SIZE (8u << 20)
 #define USTRIDE 512u
@@ -242,9 +248,10 @@ static void make_depth(void) {
 static void configure_surface(void) {
     g_win_w = g_window_w > 0 ? g_window_w : 1024;
     g_win_h = g_window_h > 0 ? g_window_h : 768;
-    /* the game is 4:3: render at the largest 4:3 size that fits, letterboxed (no stretching) */
-    if (g_win_w * 3 > g_win_h * 4) { g_surf_h = g_win_h; g_surf_w = g_win_h * 4 / 3; }
-    else { g_surf_w = g_win_w; g_surf_h = g_win_w * 3 / 4; }
+    /* render at the largest area with the game's aspect ratio that fits, letterboxed (no stretching) */
+    g_asp_w = g_game_aspect_w; g_asp_h = g_game_aspect_h;
+    if ((long)g_win_w * g_asp_h > (long)g_win_h * g_asp_w) { g_surf_h = g_win_h; g_surf_w = g_win_h * g_asp_w / g_asp_h; }
+    else { g_surf_w = g_win_w; g_surf_h = g_win_w * g_asp_h / g_asp_w; }
     WGPUSurfaceConfiguration sc = WGPU_SURFACE_CONFIGURATION_INIT;
     sc.device = g_dev;
     sc.format = g_surf_fmt;
@@ -657,8 +664,14 @@ static void destroy_retired(void) {
     g_nretired = 0;
 }
 
+static void flush_stage(void) {
+    if (g_vpos > g_vflushed) { wgpuQueueWriteBuffer(g_queue, g_vbuf, g_vflushed, g_vstage + g_vflushed, g_vpos - g_vflushed); g_vflushed = g_vpos; }
+    if (g_upos > g_uflushed) { wgpuQueueWriteBuffer(g_queue, g_ubuf, g_uflushed, g_ustage + g_uflushed, g_upos - g_uflushed); g_uflushed = g_upos; }
+}
+
 static void submit(void) {
     end_pass();
+    flush_stage();
     if (g_enc) {
         WGPUCommandBuffer cb = wgpuCommandEncoderFinish(g_enc, NULL);
         wgpuQueueSubmit(g_queue, 1, &cb);
@@ -668,12 +681,13 @@ static void submit(void) {
     }
     destroy_retired();   /* nothing recorded can use them any more */
     g_vpos = g_upos = 0;
+    g_vflushed = g_uflushed = 0;
     g_batch++;
 }
 
 static void begin_frame(void) {
     if (g_frame_open) return;
-    if (g_window_w != g_win_w || g_window_h != g_win_h) {
+    if (g_window_w != g_win_w || g_window_h != g_win_h || g_asp_w != g_game_aspect_w || g_asp_h != g_game_aspect_h) {
         end_pass();
         configure_surface();
         g_tgt_color = g_tgt_depth = NULL;
@@ -978,8 +992,9 @@ static void exec_draw(const CmdDraw *c) {
             views[s] = gs && !gs->depth && gs->view != g_tgt_color ? gs->view : g_black.view;
         }
     }
-    wgpuQueueWriteBuffer(g_queue, g_vbuf, g_vpos, c + 1, bytes);
-    wgpuQueueWriteBuffer(g_queue, g_ubuf, g_upos, &c->u, sizeof c->u);
+    if (!g_vstage) { g_vstage = malloc(VBUF_SIZE); g_ustage = malloc(UBUF_SIZE); }
+    memcpy(g_vstage + g_vpos, c + 1, bytes);
+    memcpy(g_ustage + g_upos, &c->u, sizeof c->u);
 
     WGPUBindGroupEntry te[8];
     for (int i = 0; i < 4; i++) {

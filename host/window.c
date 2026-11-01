@@ -21,7 +21,8 @@ static void disable_app_nap(void) {
 }
 
 void *g_metal_layer;           /* CAMetalLayer the renderer draws into */
-int g_window_w = 1024, g_window_h = 768;   /* drawable size in pixels */
+int g_window_w = 1024, g_window_h = 768;
+extern uint32_t host_video_width(void), host_video_height(void);   /* drawable size in pixels */
 static SDL_Window *g_window;
 
 void input_key_hid(int usage, int down);   /* input.c */
@@ -133,6 +134,7 @@ int window_create(const char *title) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 0;
     }
+    g_window_w = (int)(768ull * host_video_width() / host_video_height());   /* window shaped like the game picture */
     g_window = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, g_window_w, g_window_h,
                                 SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
                                 (getenv("RC_FULLSCREEN") ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0));

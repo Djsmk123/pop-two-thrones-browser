@@ -11,7 +11,7 @@
 
 enum { RT_TEMP = 0, RT_INPUT = 1, RT_CONST = 2, RT_ADDR = 3, RT_RASTOUT = 4, RT_ATTROUT = 5, RT_TEXOUT = 6 };
 
-typedef struct { uint8_t type, rel, neg, swz[4]; uint16_t num; } Src;
+typedef struct { uint8_t type, rel, neg, swz[4], ident; uint16_t num; } Src;   /* ident: no swizzle, no negation */
 typedef struct { uint16_t op; uint8_t dtype, dmask; uint16_t dnum; uint8_t nsrc; Src s[3]; } Insn;
 
 typedef struct {
@@ -19,6 +19,7 @@ typedef struct {
     /* declaration: input register sources */
     struct { uint8_t used, stream, type; uint16_t offset; } in[16];
     float defs[96][4]; uint8_t has_def[96];        /* constants from the declaration and `def` */
+    int any_def;
     int fixed_function;                            /* declaration without a program */
     int ok;
 } VsProgram;
@@ -73,6 +74,7 @@ static Src decode_src(uint32_t t) {
     s.rel = (t >> 13) & 1;
     s.neg = ((t >> 24) & 0xF) == 1;
     for (int k = 0; k < 4; k++) s.swz[k] = (uint8_t)((t >> (16 + 2 * k)) & 3);
+    s.ident = !s.neg && s.swz[0] == 0 && s.swz[1] == 1 && s.swz[2] == 2 && s.swz[3] == 3;
     return s;
 }
 
@@ -123,6 +125,7 @@ static VsProgram *program_for(Shader *sh) {
         for (uint32_t i = 0; i < sh->code_len; i++) fprintf(stderr, " %08x", sh->code[i]);
         fprintf(stderr, "\n");
     }
+    for (int i = 0; i < 96; i++) if (p->has_def[i]) p->any_def = 1;
     sh->backend = p;
     return p;
 }
@@ -159,141 +162,181 @@ static void fetch(const uint8_t *src, uint32_t type, float *o) {
     }
 }
 
-/* ------------------------------------------------------------------ execution */
+/* ------------------------------------------------------------------ execution
+ * Four vertices run together: every register component is a 4-lane vector (one lane per vertex), so an instruction is a handful
+ * of vector operations and swizzles cost nothing. Relative constant addressing (skinning) gathers per lane. */
 
-static inline void read_src(const Src *s, float r[][4], const float v[16][4], const float c[96][4], int a0,
-                            float *o) {
-    const float *base;
-    static const float zero[4];
+typedef float v4f __attribute__((vector_size(16)));
+typedef int v4i __attribute__((vector_size(16)));
+
+static inline v4f splat(float x) { return (v4f){ x, x, x, x }; }
+static inline float lane(v4f v, int i) { return v[i]; }
+
+typedef struct {
+    v4f in[16][4], tmp[12][4], pos[4], d[2][4], tex[8][4], dummy[4];
+    int a0[4];
+} VsRegs;
+
+static inline void read_src(const VsProgram *p, const Src *s, const VsRegs *R, const float c[96][4], v4f out[4]) {
     switch (s->type) {
-    case RT_TEMP: base = s->num < 12 ? r[s->num] : zero; break;
-    case RT_INPUT: base = s->num < 16 ? v[s->num] : zero; break;
-    case RT_CONST: { int i = s->num + (s->rel ? a0 : 0); base = i >= 0 && i < 96 ? c[i] : zero; break; }
-    default: base = zero; break;
+    case RT_TEMP: if (s->num < 12) { for (int k = 0; k < 4; k++) out[k] = R->tmp[s->num][s->swz[k]]; break; } goto zero;
+    case RT_INPUT: if (s->num < 16) { for (int k = 0; k < 4; k++) out[k] = R->in[s->num][s->swz[k]]; break; } goto zero;
+    case RT_CONST:
+        if (!s->rel) {
+            if (s->num < 96) { for (int k = 0; k < 4; k++) out[k] = splat(c[s->num][s->swz[k]]); break; }
+            goto zero;
+        } else {
+            for (int k = 0; k < 4; k++) {
+                float g[4];
+                for (int l = 0; l < 4; l++) { int i = s->num + R->a0[l]; g[l] = i >= 0 && i < 96 ? c[i][s->swz[k]] : 0.f; }
+                out[k] = (v4f){ g[0], g[1], g[2], g[3] };
+            }
+            break;
+        }
+    default: zero:
+        for (int k = 0; k < 4; k++) out[k] = splat(0.f);
     }
-    for (int k = 0; k < 4; k++) o[k] = s->neg ? -base[s->swz[k]] : base[s->swz[k]];
+    if (s->neg) for (int k = 0; k < 4; k++) out[k] = -out[k];
+    (void)p;
 }
 
-static inline float dp3(const float *a, const float *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
-static inline float dp4(const float *a, const float *b) { return dp3(a, b) + a[3] * b[3]; }
+static inline v4f dp3v(const v4f *a, const v4f *b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+static inline v4f dp4v(const v4f *a, const v4f *b) { return dp3v(a, b) + a[3] * b[3]; }
+static inline v4f selv(v4i m, v4f a, v4f b) { return (v4f)(((v4i)a & m) | ((v4i)b & ~m)); }
 
 int vs_trace;   /* set by the renderer to trace one vertex */
 
-void vs_run(Shader *sh, const float consts[96][4], const VsStreams *st, uint32_t index, VsOut *out) {
+/* runs the shader for vertices [from, to) (at most 4 at a time); vertex i is idx[i] (or base + i without idx); out[i - from] */
+void vs_run_batch(Shader *sh, const float consts[96][4], const VsStreams *st, const uint32_t *idx, uint32_t base,
+                  uint32_t from, uint32_t to, VsOut *out) {
     VsProgram *p = program_for(sh);
-    float v[16][4];
-    for (int i = 0; i < 16; i++) {
-        if (!p->in[i].used || !st->data[p->in[i].stream]) { v[i][0] = v[i][1] = v[i][2] = 0; v[i][3] = 1; continue; }
-        const uint8_t *src = st->data[p->in[i].stream] + (size_t)index * st->stride[p->in[i].stream] + p->in[i].offset;
-        fetch(src, p->in[i].type, v[i]);
-    }
-    if (p->fixed_function) {
-        /* declaration-only shader: D3D's fixed register mapping (v0 position, v5/v6 colors, v7+ texcoords) */
-        const float *m = st->ff_mvp;
-        const float *x = v[0];
-        for (int k = 0; k < 4; k++) out->pos[k] = x[0] * m[k] + x[1] * m[4 + k] + x[2] * m[8 + k] + m[12 + k];
-        if (p->in[5].used) memcpy(out->d0, v[5], 16); else for (int k = 0; k < 4; k++) out->d0[k] = 1;
-        if (p->in[6].used) memcpy(out->d1, v[6], 16); else memset(out->d1, 0, 16);
-        for (int t = 0; t < 4; t++) memcpy(out->tex[t], v[7 + t], 16);
-        return;
-    }
-    if (!p->ok) { memset(out, 0, sizeof *out); return; }
-
-    /* constants: declaration/def values override nothing set later by SetVertexShaderConstant, but D3D
-       applies declaration constants at SetVertexShader time; using them as a base is close enough */
-    float r[12][4] = { { 0 } };
-    float o_pos[4] = { 0, 0, 0, 1 }, o_d[2][4] = { { 1, 1, 1, 1 }, { 0, 0, 0, 0 } }, o_t[8][4];
-    for (int t = 0; t < 8; t++) { o_t[t][0] = o_t[t][1] = o_t[t][2] = 0; o_t[t][3] = 1; }
-    float dummy[4];
-    int a0 = 0;
-    const float (*c)[4] = consts;
     float cbuf[96][4];
-    int any_def = 0;
-    for (int i = 0; i < 96 && !any_def; i++) any_def = p->has_def[i];
-    if (any_def) {
+    const float (*c)[4] = consts;
+    if (p->any_def) {
         memcpy(cbuf, consts, sizeof cbuf);
         for (int i = 0; i < 96; i++) if (p->has_def[i]) memcpy(cbuf[i], p->defs[i], 16);
         c = (const float (*)[4])cbuf;
     }
-
-    for (uint32_t i = 0; i < p->n; i++) {
-        const Insn *in = &p->code[i];
-        float s0[4], s1[4], s2[4], res[4] = { 0, 0, 0, 0 };
-        if (in->nsrc > 0) read_src(&in->s[0], r, (const float (*)[4])v, c, a0, s0);
-        if (in->nsrc > 1) read_src(&in->s[1], r, (const float (*)[4])v, c, a0, s1);
-        if (in->nsrc > 2) read_src(&in->s[2], r, (const float (*)[4])v, c, a0, s2);
-        switch (in->op) {
-        case 1: memcpy(res, s0, 16); break;                                          /* mov */
-        case 2: for (int k = 0; k < 4; k++) res[k] = s0[k] + s1[k]; break;          /* add */
-        case 3: for (int k = 0; k < 4; k++) res[k] = s0[k] - s1[k]; break;          /* sub */
-        case 4: for (int k = 0; k < 4; k++) res[k] = s0[k] * s1[k] + s2[k]; break;  /* mad */
-        case 5: for (int k = 0; k < 4; k++) res[k] = s0[k] * s1[k]; break;          /* mul */
-        case 6: { float x = s0[3]; float y = x == 1.f ? 1.f : x == 0.f ? INFINITY : 1.f / x;   /* rcp */
-                  for (int k = 0; k < 4; k++) res[k] = y; break; }
-        case 7: { float x = fabsf(s0[3]); float y = x == 1.f ? 1.f : x == 0.f ? INFINITY : 1.f / sqrtf(x);  /* rsq */
-                  for (int k = 0; k < 4; k++) res[k] = y; break; }
-        case 8: { float d = dp3(s0, s1); for (int k = 0; k < 4; k++) res[k] = d; break; }
-        case 9: { float d = dp4(s0, s1); for (int k = 0; k < 4; k++) res[k] = d; break; }
-        case 10: for (int k = 0; k < 4; k++) res[k] = s0[k] < s1[k] ? s0[k] : s1[k]; break;
-        case 11: for (int k = 0; k < 4; k++) res[k] = s0[k] >= s1[k] ? s0[k] : s1[k]; break;
-        case 12: for (int k = 0; k < 4; k++) res[k] = s0[k] < s1[k] ? 1.f : 0.f; break;   /* slt */
-        case 13: for (int k = 0; k < 4; k++) res[k] = s0[k] >= s1[k] ? 1.f : 0.f; break;  /* sge */
-        case 14: { float y = exp2f(s0[3]); for (int k = 0; k < 4; k++) res[k] = y; break; }   /* exp */
-        case 15: { float x = fabsf(s0[3]); float y = x == 0.f ? -INFINITY : log2f(x);         /* log */
-                   for (int k = 0; k < 4; k++) res[k] = y; break; }
-        case 16: {                                                                   /* lit */
-            float pw = s0[3] < -128.f ? -128.f : s0[3] > 128.f ? 128.f : s0[3];
-            res[0] = 1; res[3] = 1;
-            res[1] = s0[0] > 0 ? s0[0] : 0;
-            res[2] = s0[0] > 0 && s0[1] > 0 ? powf(s0[1], pw) : 0;
-            break;
-        }
-        case 17: res[0] = 1; res[1] = s0[1] * s1[1]; res[2] = s0[2]; res[3] = s1[3]; break;   /* dst */
-        case 18: for (int k = 0; k < 4; k++) res[k] = s0[k] * (s1[k] - s2[k]) + s2[k]; break; /* lrp */
-        case 19: for (int k = 0; k < 4; k++) res[k] = s0[k] - floorf(s0[k]); break;           /* frc */
-        case 20: case 21: case 22: case 23: case 24: {                               /* m4x4 m4x3 m3x4 m3x3 m3x2 */
-            int rows = in->op == 20 || in->op == 22 ? 4 : in->op == 24 ? 2 : 3, four = in->op <= 21;
-            Src row = in->s[1];
-            for (int k = 0; k < rows; k++) {
-                float m[4];
-                read_src(&row, r, (const float (*)[4])v, c, a0, m);
-                res[k] = four ? dp4(s0, m) : dp3(s0, m);
-                row.num++;
+    for (uint32_t g = from; g < to; g += 4) {
+        int n = to - g < 4 ? (int)(to - g) : 4;
+        uint32_t vi[4];
+        for (int l = 0; l < 4; l++) { uint32_t i = g + (uint32_t)(l < n ? l : n - 1); vi[l] = idx ? idx[i] : base + i; }
+        VsRegs R;
+        memset(&R, 0, sizeof R);
+        for (int i = 0; i < 16; i++) {
+            if (!p->in[i].used || !st->data[p->in[i].stream]) { R.in[i][3] = splat(1.f); continue; }
+            for (int l = 0; l < 4; l++) {
+                float f[4];
+                fetch(st->data[p->in[i].stream] + (size_t)vi[l] * st->stride[p->in[i].stream] + p->in[i].offset, p->in[i].type, f);
+                for (int k = 0; k < 4; k++) R.in[i][k][l] = f[k];
             }
-            break;
         }
-        case 78: { float w = s0[3]; float f = floorf(w);                             /* expp */
-                   res[0] = exp2f(f); res[1] = w - f; res[2] = exp2f(w); res[3] = 1; break; }
-        case 79: { float x = fabsf(s0[3]);                                           /* logp */
-                   if (x == 0.f) { res[0] = res[2] = -INFINITY; res[1] = 1; }
-                   else { int e; float m = frexpf(x, &e); res[0] = (float)(e - 1); res[1] = m * 2; res[2] = log2f(x); }
-                   res[3] = 1; break; }
-        default: break;
+        if (p->fixed_function) {
+            const float *m = st->ff_mvp;
+            for (int l = 0; l < n; l++) {
+                VsOut *o = &out[g - from + (uint32_t)l];
+                float x[4], v5[4], v6[4];
+                for (int k = 0; k < 4; k++) { x[k] = R.in[0][k][l]; v5[k] = R.in[5][k][l]; v6[k] = R.in[6][k][l]; }
+                for (int k = 0; k < 4; k++) o->pos[k] = x[0] * m[k] + x[1] * m[4 + k] + x[2] * m[8 + k] + m[12 + k];
+                if (p->in[5].used) memcpy(o->d0, v5, 16); else for (int k = 0; k < 4; k++) o->d0[k] = 1;
+                if (p->in[6].used) memcpy(o->d1, v6, 16); else memset(o->d1, 0, 16);
+                for (int t = 0; t < 4; t++) for (int k = 0; k < 4; k++) o->tex[t][k] = R.in[7 + t][k][l];
+            }
+            continue;
         }
-        float *dst;
-        switch (in->dtype) {
-        case RT_TEMP: dst = in->dnum < 12 ? r[in->dnum] : dummy; break;
-        case RT_ADDR: if (in->dmask & 1) a0 = (int)floorf(res[0]); continue;
-        case RT_RASTOUT: dst = in->dnum == 0 ? o_pos : dummy; break;
-        case RT_ATTROUT: dst = in->dnum < 2 ? o_d[in->dnum] : dummy; break;
-        case RT_TEXOUT: dst = in->dnum < 8 ? o_t[in->dnum] : dummy; break;
-        default: dst = dummy; break;
+        if (!p->ok) { memset(&out[g - from], 0, sizeof(VsOut) * (size_t)n); continue; }
+        R.pos[3] = splat(1.f);
+        for (int k = 0; k < 4; k++) { R.d[0][k] = splat(1.f); }
+        for (int t = 0; t < 8; t++) R.tex[t][3] = splat(1.f);
+
+        for (uint32_t i = 0; i < p->n; i++) {
+            const Insn *in = &p->code[i];
+            v4f s0[4], s1[4], s2[4], res[4];
+            if (in->nsrc > 0) read_src(p, &in->s[0], &R, c, s0);
+            if (in->nsrc > 1) read_src(p, &in->s[1], &R, c, s1);
+            if (in->nsrc > 2) read_src(p, &in->s[2], &R, c, s2);
+            switch (in->op) {
+            case 1: for (int k = 0; k < 4; k++) res[k] = s0[k]; break;                                  /* mov */
+            case 2: for (int k = 0; k < 4; k++) res[k] = s0[k] + s1[k]; break;                         /* add */
+            case 3: for (int k = 0; k < 4; k++) res[k] = s0[k] - s1[k]; break;                         /* sub */
+            case 4: for (int k = 0; k < 4; k++) res[k] = s0[k] * s1[k] + s2[k]; break;                 /* mad */
+            case 5: for (int k = 0; k < 4; k++) res[k] = s0[k] * s1[k]; break;                         /* mul */
+            case 6: case 7: case 14: case 15: {                                                         /* rcp rsq exp log (scalar, per lane) */
+                v4f y;
+                for (int l = 0; l < 4; l++) {
+                    float x = s0[3][l], r;
+                    if (in->op == 6) r = x == 1.f ? 1.f : x == 0.f ? INFINITY : 1.f / x;
+                    else if (in->op == 7) { x = fabsf(x); r = x == 1.f ? 1.f : x == 0.f ? INFINITY : 1.f / sqrtf(x); }
+                    else if (in->op == 14) r = exp2f(x);
+                    else { x = fabsf(x); r = x == 0.f ? -INFINITY : log2f(x); }
+                    y[l] = r;
+                }
+                for (int k = 0; k < 4; k++) res[k] = y;
+                break;
+            }
+            case 8: { v4f d = dp3v(s0, s1); for (int k = 0; k < 4; k++) res[k] = d; break; }
+            case 9: { v4f d = dp4v(s0, s1); for (int k = 0; k < 4; k++) res[k] = d; break; }
+            case 10: for (int k = 0; k < 4; k++) res[k] = selv(s0[k] < s1[k], s0[k], s1[k]); break;       /* min */
+            case 11: for (int k = 0; k < 4; k++) res[k] = selv(s0[k] >= s1[k], s0[k], s1[k]); break;      /* max */
+            case 12: for (int k = 0; k < 4; k++) res[k] = selv(s0[k] < s1[k], splat(1.f), splat(0.f)); break;   /* slt */
+            case 13: for (int k = 0; k < 4; k++) res[k] = selv(s0[k] >= s1[k], splat(1.f), splat(0.f)); break;  /* sge */
+            case 16: {                                                                                  /* lit */
+                for (int k = 0; k < 4; k++) res[k] = splat(0.f);
+                for (int l = 0; l < 4; l++) {
+                    float pw = s0[3][l] < -128.f ? -128.f : s0[3][l] > 128.f ? 128.f : s0[3][l];
+                    res[0][l] = 1; res[3][l] = 1;
+                    res[1][l] = s0[0][l] > 0 ? s0[0][l] : 0;
+                    res[2][l] = s0[0][l] > 0 && s0[1][l] > 0 ? powf(s0[1][l], pw) : 0;
+                }
+                break;
+            }
+            case 17: res[0] = splat(1.f); res[1] = s0[1] * s1[1]; res[2] = s0[2]; res[3] = s1[3]; break;   /* dst */
+            case 18: for (int k = 0; k < 4; k++) res[k] = s0[k] * (s1[k] - s2[k]) + s2[k]; break;       /* lrp */
+            case 19: for (int k = 0; k < 4; k++) for (int l = 0; l < 4; l++) res[k][l] = s0[k][l] - floorf(s0[k][l]); break;   /* frc */
+            case 20: case 21: case 22: case 23: case 24: {                                              /* m4x4 m4x3 m3x4 m3x3 m3x2 */
+                int rows = in->op == 20 || in->op == 22 ? 4 : in->op == 24 ? 2 : 3, four = in->op <= 21;
+                for (int k = 0; k < 4; k++) res[k] = splat(0.f);
+                Src row = in->s[1];
+                for (int k = 0; k < rows; k++) {
+                    v4f m[4];
+                    read_src(p, &row, &R, c, m);
+                    res[k] = four ? dp4v(s0, m) : dp3v(s0, m);
+                    row.num++;
+                }
+                break;
+            }
+            case 78: for (int k = 0; k < 4; k++) res[k] = splat(0.f);                                    /* expp */
+                     for (int l = 0; l < 4; l++) { float w = s0[3][l], f = floorf(w); res[0][l] = exp2f(f); res[1][l] = w - f; res[2][l] = exp2f(w); res[3][l] = 1; }
+                     break;
+            case 79: for (int k = 0; k < 4; k++) res[k] = splat(0.f);                                    /* logp */
+                     for (int l = 0; l < 4; l++) {
+                         float x = fabsf(s0[3][l]);
+                         if (x == 0.f) { res[0][l] = res[2][l] = -INFINITY; res[1][l] = 1; }
+                         else { int e; float m = frexpf(x, &e); res[0][l] = (float)(e - 1); res[1][l] = m * 2; res[2][l] = log2f(x); }
+                         res[3][l] = 1;
+                     }
+                     break;
+            default: for (int k = 0; k < 4; k++) res[k] = splat(0.f); break;
+            }
+            v4f *dst;
+            switch (in->dtype) {
+            case RT_TEMP: dst = in->dnum < 12 ? R.tmp[in->dnum] : R.dummy; break;
+            case RT_ADDR: if (in->dmask & 1) for (int l = 0; l < 4; l++) R.a0[l] = (int)floorf(res[0][l]); continue;
+            case RT_RASTOUT: dst = in->dnum == 0 ? R.pos : R.dummy; break;
+            case RT_ATTROUT: dst = in->dnum < 2 ? R.d[in->dnum] : R.dummy; break;
+            case RT_TEXOUT: dst = in->dnum < 8 ? R.tex[in->dnum] : R.dummy; break;
+            default: dst = R.dummy; break;
+            }
+            for (int k = 0; k < 4; k++) if (in->dmask & (1 << k)) dst[k] = res[k];
         }
-        for (int k = 0; k < 4; k++) if (in->dmask & (1 << k)) dst[k] = res[k];
+        for (int l = 0; l < n; l++) {
+            VsOut *o = &out[g - from + (uint32_t)l];
+            for (int k = 0; k < 4; k++) { o->pos[k] = R.pos[k][l]; o->d0[k] = R.d[0][k][l]; o->d1[k] = R.d[1][k][l]; }
+            for (int t = 0; t < 4; t++) for (int k = 0; k < 4; k++) o->tex[t][k] = R.tex[t][k][l];
+        }
     }
-    if (vs_trace) {
-        fprintf(stderr, "[vstrace %p] idx %u\n", (void *)sh, index);
-        for (int k = 0; k < 16; k++) if (p->in[k].used)
-            fprintf(stderr, "  v%d = %g %g %g %g\n", k, v[k][0], v[k][1], v[k][2], v[k][3]);
-        for (int k = 0; k < 12; k++) fprintf(stderr, "  r%d = %g %g %g %g\n", k, r[k][0], r[k][1], r[k][2], r[k][3]);
-        fprintf(stderr, "  oPos = %g %g %g %g  oD0 = %g %g %g %g  oD1 = %g %g %g %g  oT0 = %g %g\n", o_pos[0], o_pos[1],
-                o_pos[2], o_pos[3], o_d[0][0], o_d[0][1], o_d[0][2], o_d[0][3], o_d[1][0], o_d[1][1], o_d[1][2],
-                o_d[1][3], o_t[0][0], o_t[0][1]);
-        for (int k = 0; k < 96; k++)
-            fprintf(stderr, "  c%d = %g %g %g %g\n", k, c[k][0], c[k][1], c[k][2], c[k][3]);
-    }
-    memcpy(out->pos, o_pos, 16);
-    memcpy(out->d0, o_d[0], 16);
-    memcpy(out->d1, o_d[1], 16);
-    for (int t = 0; t < 4; t++) memcpy(out->tex[t], o_t[t], 16);
+}
+
+void vs_run(Shader *sh, const float consts[96][4], const VsStreams *st, uint32_t index, VsOut *out) {
+    vs_run_batch(sh, consts, st, &index, 0, 0, 1, out);
 }

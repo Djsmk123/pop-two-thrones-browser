@@ -1,0 +1,237 @@
+/* generated from lang_en.txt by tools/gen_lang.py: English text for the dialogs and menu strings of a Spanish edition's POPData.bf */
+#define LANG_EN_TABLE \
+    { "Messages.SafeMode", "Use safe mode config?" }, \
+    { "Messages.InsertCD", "Please insert the Prince of Persia: The Two Thrones game CD." }, \
+    { "P_MainMenu.Back", "Change profile" }, \
+    { "P_MainMenu.Credits", "Credits" }, \
+    { "P_MainMenu.LoadGame", "Load game" }, \
+    { "P_MainMenu.NewGame", "Start new game" }, \
+    { "P_MainMenu.Options", "Options" }, \
+    { "P_MainMenu.Quit", "Quit" }, \
+    { "P_MainMenu.SpecialLoad", "Load special map" }, \
+    { "P_SpecialLoad.Back", "Back" }, \
+    { "P_SpecialLoad.Next15", "Next 15" }, \
+    { "P_SpecialLoad.Prev15", "Previous 15" }, \
+    { "P_SpecialLoad.Title", "Load special map" }, \
+    { "P_InGameMenu.Back", "Back" }, \
+    { "P_InGameMenu.Continue", "Continue" }, \
+    { "P_InGameMenu.MainMenu", "Quit to main menu" }, \
+    { "P_InGameMenu.Options", "Options" }, \
+    { "P_CreateProfile.Back", "Back" }, \
+    { "P_CreateProfile.Create", "Create" }, \
+    { "P_CreateProfile.Quit", "Quit" }, \
+    { "P_CreateProfile.Title", "Create a new profile:" }, \
+    { "P_ProfileMenu.CreateNew", "New profile" }, \
+    { "P_ProfileMenu.Delete", "Delete" }, \
+    { "P_ProfileMenu.Quit", "Quit" }, \
+    { "P_ProfileMenu.Select", "Select" }, \
+    { "P_ProfileMenu.Title", "Choose a profile" }, \
+    { "P_LoadSavedGame.Back", "Back" }, \
+    { "P_LoadSavedGame.Delete", "Delete" }, \
+    { "P_LoadSavedGame.Load", "Load" }, \
+    { "P_LoadSavedGame.Title", "Load game" }, \
+    { "P_SaveGame.Back", "Back" }, \
+    { "P_SaveGame.Delete", "Delete" }, \
+    { "P_SaveGame.EmptySlot", "<< New saved game >>" }, \
+    { "P_SaveGame.Save", "Save" }, \
+    { "P_SaveGame.Title", "Save game" }, \
+    { "P_SaveConfirmation.ReplayVision", "Replay vision" }, \
+    { "P_SaveConfirmation.Title", "Do you want to save?" }, \
+    { "P_SaveConfirmation.Yes", "Yes" }, \
+    { "P_Options.Back", "Back" }, \
+    { "P_Options.Controls", "Controls" }, \
+    { "P_Options.Game", "Game" }, \
+    { "P_Options.Sounds", "Sounds" }, \
+    { "P_Options.Title", "Options" }, \
+    { "P_Options.Video", "Graphics" }, \
+    { "P_SoundsMenu.3DAudioHardwareAcceleration", "3D HW acceleration" }, \
+    { "P_SoundsMenu.3DAudioOff", "Disabled" }, \
+    { "P_SoundsMenu.3DAudioOn", "Enabled" }, \
+    { "P_SoundsMenu.Back", "Back" }, \
+    { "P_SoundsMenu.DefaultSettings", "Default settings" }, \
+    { "P_SoundsMenu.EAXOff", "Disabled" }, \
+    { "P_SoundsMenu.EAXOn", "Enabled" }, \
+    { "P_SoundsMenu.EffectsOff", "Disabled" }, \
+    { "P_SoundsMenu.EffectsOn", "Enabled" }, \
+    { "P_SoundsMenu.EffectsVolume", "Effects volume" }, \
+    { "P_SoundsMenu.MusicOff", "Disabled" }, \
+    { "P_SoundsMenu.MusicOn", "Enabled" }, \
+    { "P_SoundsMenu.MusicVolume", "Music volume" }, \
+    { "P_SoundsMenu.Save", "Save settings" }, \
+    { "P_SoundsMenu.Title", "Sounds" }, \
+    { "P_SoundsMenu.Virtualization", "Audio virtualization" }, \
+    { "P_SoundsMenu.VirtualizationFull", "Full" }, \
+    { "P_SoundsMenu.VirtualizationLight", "Light" }, \
+    { "P_SoundsMenu.VirtualizationNone", "None" }, \
+    { "P_SoundsMenu.VoicesOff", "Disabled" }, \
+    { "P_SoundsMenu.VoicesOn", "Enabled" }, \
+    { "P_SoundsMenu.VoicesVolume", "Voices volume" }, \
+    { "P_VideoMenu.Advanced", "Advanced" }, \
+    { "P_VideoMenu.Back", "Back" }, \
+    { "P_VideoMenu.Basic", "Basic" }, \
+    { "P_VideoMenu.DefaultSettings", "Default settings" }, \
+    { "P_VideoMenu.Effects", "Effects" }, \
+    { "P_VideoMenu.Filtering", "Filtering" }, \
+    { "P_VideoMenu.Fog", "Fog" }, \
+    { "P_VideoMenu.Resolution", "Resolution" }, \
+    { "P_VideoMenu.Save", "Save settings" }, \
+    { "P_VideoMenu.Shadow", "Shadow effects" }, \
+    { "P_VideoMenu.SpecialFX", "Special effects" }, \
+    { "P_VideoMenu.TextureQuality", "Texture quality" }, \
+    { "P_VideoMenu.Title", "Graphics" }, \
+    { "P_VideoMenu.VSync", "V-Sync" }, \
+    { "P_VideoMenu.Water", "Water effects" }, \
+    { "P_VideoMenu.Filtering1", "Trilinear" }, \
+    { "P_VideoMenu.Filtering2", "Bilinear" }, \
+    { "P_VideoMenu.Filtering3", "None" }, \
+    { "P_VideoMenu.VSync1", "Disable" }, \
+    { "P_VideoMenu.VSync2", "Enable" }, \
+    { "P_VideoMenu.TextureQuality1", "High" }, \
+    { "P_VideoMenu.TextureQuality2", "Low" }, \
+    { "P_VideoMenu.SpecialFX1", "High" }, \
+    { "P_VideoMenu.SpecialFX2", "Medium" }, \
+    { "P_VideoMenu.SpecialFX3", "Low" }, \
+    { "P_VideoMenu.Shadow1", "High" }, \
+    { "P_VideoMenu.Shadow2", "Medium" }, \
+    { "P_VideoMenu.Shadow3", "None" }, \
+    { "P_VideoMenu.Water1", "Enabled" }, \
+    { "P_VideoMenu.Water2", "Disabled" }, \
+    { "P_VideoMenu.Fog1", "Enabled" }, \
+    { "P_VideoMenu.Fog2", "Disabled" }, \
+    { "P_VideoAdvanced.Back", "Back" }, \
+    { "P_VideoAdvanced.BitDepth", "Bit depth" }, \
+    { "P_VideoAdvanced.ColorDiffusion", "Color diffusion" }, \
+    { "P_VideoAdvanced.ColorDiffusionOff", "Disabled" }, \
+    { "P_VideoAdvanced.ColorDiffusionOn", "Enabled" }, \
+    { "P_VideoAdvanced.HaloOcclusion", "Halo occlusion" }, \
+    { "P_VideoAdvanced.HaloOcclusionOff", "Disabled" }, \
+    { "P_VideoAdvanced.HaloOcclusionOn", "Enabled" }, \
+    { "P_VideoAdvanced.LightmapsOff", "Disabled" }, \
+    { "P_VideoAdvanced.LightmapsOn", "Enabled" }, \
+    { "P_VideoAdvanced.MotionBlur", "Motion blur" }, \
+    { "P_VideoAdvanced.MotionBlurOff", "Disabled" }, \
+    { "P_VideoAdvanced.MotionBlurOn", "Enabled" }, \
+    { "P_VideoAdvanced.MotionSmooth", "Motion smoothing" }, \
+    { "P_VideoAdvanced.MotionSmoothOff", "Disabled" }, \
+    { "P_VideoAdvanced.MotionSmoothOn", "Enabled" }, \
+    { "P_VideoAdvanced.Pinch", "Pinch" }, \
+    { "P_VideoAdvanced.PinchOff", "Disabled" }, \
+    { "P_VideoAdvanced.PinchOn", "Enabled" }, \
+    { "P_VideoAdvanced.SmartBlur", "Smart blur" }, \
+    { "P_VideoAdvanced.SmartBlurOff", "Disabled" }, \
+    { "P_VideoAdvanced.SmartBlurOn", "Enabled" }, \
+    { "P_VideoAdvanced.Title", "Advanced graphics settings" }, \
+    { "P_ControlsMenu.Back", "Back" }, \
+    { "P_ControlsMenu.Camera", "Camera" }, \
+    { "P_ControlsMenu.DefaultSettings", "Default settings" }, \
+    { "P_ControlsMenu.FLInverted", "Inverted" }, \
+    { "P_ControlsMenu.FLNormal", "Normal" }, \
+    { "P_ControlsMenu.FreeLook", "Free look" }, \
+    { "P_ControlsMenu.Gamepad", "Gamepad" }, \
+    { "P_ControlsMenu.Keyboard", "Keyboard" }, \
+    { "P_ControlsMenu.MouseSpeed", "Mouse speed" }, \
+    { "P_ControlsMenu.NavInverted", "Inverted" }, \
+    { "P_ControlsMenu.NavNormal", "Normal" }, \
+    { "P_ControlsMenu.Navigation", "Camera navigation" }, \
+    { "P_ControlsMenu.Save", "Save settings" }, \
+    { "P_ControlsMenu.Title", "Controls" }, \
+    { "P_ControlsMenu.TitleGamepad", "Controls: gamepad" }, \
+    { "P_ControlsMenu.TitleKeyboard", "Controls: keyboard" }, \
+    { "P_GameOptions.Back", "Back" }, \
+    { "P_GameOptions.Cheats", "Cheats" }, \
+    { "P_GameOptions.CheatsOff", "Disabled" }, \
+    { "P_GameOptions.CheatsOn", "Enabled" }, \
+    { "P_GameOptions.DefaultSettings", "Default settings" }, \
+    { "P_GameOptions.IF_0", "None" }, \
+    { "P_GameOptions.IF_1", "Few" }, \
+    { "P_GameOptions.IF_2", "Normal" }, \
+    { "P_GameOptions.IF_3", "Many" }, \
+    { "P_GameOptions.InsertFrequency", "Insert frequency" }, \
+    { "P_GameOptions.Interface", "Interface" }, \
+    { "P_GameOptions.InterfaceOff", "Disabled" }, \
+    { "P_GameOptions.InterfaceOn", "Enabled" }, \
+    { "P_GameOptions.Save", "Save settings" }, \
+    { "P_GameOptions.SetupMenu", "Setup menu" }, \
+    { "P_GameOptions.SetupMenuOff", "Disabled" }, \
+    { "P_GameOptions.SetupMenuOn", "Enabled" }, \
+    { "P_GameOptions.Title", "Game options" }, \
+    { "P_GameOptions.Tutorials", "Tutorials" }, \
+    { "P_GameOptions.TutorialsOff", "Disabled" }, \
+    { "P_GameOptions.TutorialsOn", "Enabled" }, \
+    { "P_GameOptions.WorkInProgress", "Work in progress" }, \
+    { "P_GameOptions.WorkInProgressOff", "Disabled" }, \
+    { "P_GameOptions.WorkInProgressOn", "Enabled" }, \
+    { "P_GameOptions.AmountOfMovieInserts", "Amount of movie inserts" }, \
+    { "P_GameOver.Quit", "Quit game" }, \
+    { "P_GameOver.Retry", "Try again" }, \
+    { "P_GameOver.Title", "Game over" }, \
+    { "MBInsertCD.Text", "Please insert the Prince of Persia game CD." }, \
+    { "MBInsertCD.OK", "OK" }, \
+    { "ConfirmProfileDelete.Text", "Are you sure you want to delete||the profile named '%s' and||all of its saved games?" }, \
+    { "ConfirmProfileDelete.Yes", "Yes" }, \
+    { "ProfileLoadError.Text", "The profile was damaged, its settings||have been reset to the defaults." }, \
+    { "ProfileLoadError.OK", "OK" }, \
+    { "ProfileAlreadyExists.Text", "A profile with the name||'%s' already exists. Enter||another name or delete it." }, \
+    { "ProfileAlreadyExists.OK", "OK" }, \
+    { "ProfileEmptyName.Text", "Enter a name for your profile." }, \
+    { "ProfileEmptyName.OK", "OK" }, \
+    { "ProfileInvalidName.Text", "The name you entered is not valid.||Profile names may only||contain letters and digits." }, \
+    { "ProfileInvalidName.OK", "OK" }, \
+    { "ProfileReservedName.Text", "Cannot create a profile||with the name '%s'." }, \
+    { "ProfileReservedName.OK", "OK" }, \
+    { "ProfileCreationFailed.Text", "An error occurred while||creating the profile. Make sure you||have enough space||on the hard disk." }, \
+    { "ProfileCreationFailed.OK", "OK" }, \
+    { "ProfileSavingFailed.Text", "An error occurred while||modifying the profile. Make sure you||have enough space||on the hard disk." }, \
+    { "ProfileSavingFailed.OK", "OK" }, \
+    { "ProfileDeletingFailed.Text", "An error occurred while||deleting the profile. Make sure you have||the right access permissions." }, \
+    { "ProfileDeletingFailed.OK", "OK" }, \
+    { "ConfirmQuit.Text", "Are you sure you want to quit||Prince of Persia?" }, \
+    { "ConfirmQuit.Yes", "Yes" }, \
+    { "ConfirmInGameQuit.Text", "Are you sure||you want to quit||the game?" }, \
+    { "ConfirmInGameQuit.Yes", "Yes" }, \
+    { "ConfirmGameOverQuit.Text", "Are you sure||you want to quit||the game?" }, \
+    { "ConfirmGameOverQuit.Yes", "Yes" }, \
+    { "GameSettingsDefaultConfirm.Text", "Are you sure you want to||restore the default||settings?" }, \
+    { "GameSettingsDefaultConfirm.Yes", "Yes" }, \
+    { "GameOptionsDefaultConfirm.Text", "Are you sure you want to||restore the default||options?" }, \
+    { "GameOptionsDefaultConfirm.Yes", "Yes" }, \
+    { "SoundDefaultConfirm.Text", "Are you sure you want to||restore the default||sound settings?" }, \
+    { "SoundDefaultConfirm.Yes", "Yes" }, \
+    { "VideoDefaultConfirm.Text", "Are you sure you want to||restore the default||graphics settings?" }, \
+    { "VideoDefaultConfirm.Yes", "Yes" }, \
+    { "VideoApplyValidation.Text", "Do you want to keep these settings?" }, \
+    { "VideoApplyValidation.Line4", "(cancelling in %d seconds)" }, \
+    { "VideoApplyValidation.Line4S", "(cancelling in 1 second)" }, \
+    { "VideoApplyValidation.Yes", "Yes" }, \
+    { "SoundApplyConfirm.Cancel", "Cancel" }, \
+    { "SoundApplyConfirm.Text", "Changes were made to the||sound settings. Keep them?" }, \
+    { "SoundApplyConfirm.Yes", "Yes" }, \
+    { "VideoBackConfrim.Cancel", "Cancel" }, \
+    { "VideoBackConfrim.Text", "Changes were made to the||graphics settings. Keep them?" }, \
+    { "VideoBackConfrim.Yes", "Yes" }, \
+    { "GameOptionsBackConfrim.Cancel", "Cancel" }, \
+    { "GameOptionsBackConfrim.Text", "Changes were made to the||game options. Keep them?" }, \
+    { "GameOptionsBackConfrim.Yes", "Yes" }, \
+    { "ControlsBackConfrim.Cancel", "Cancel" }, \
+    { "ControlsBackConfrim.Text", "Changes were made to the||controls settings. Keep them?" }, \
+    { "ControlsBackConfrim.Yes", "Yes" }, \
+    { "BindReplaceConfirm.Text", "%s is already assigned||to %s. Are you sure you||want to change it to %s?" }, \
+    { "BindReplaceConfirm.Yes", "Yes" }, \
+    { "SaveOverwriteConfirm.Text", "Are you sure you want to||overwrite this saved game?" }, \
+    { "SaveOverwriteConfirm.Yes", "Yes" }, \
+    { "SaveDeleteConfirm.Text", "Are you sure you want to delete||this saved game?" }, \
+    { "SaveDeleteConfirm.Yes", "Yes" }, \
+    { "SaveAbortConfirm.Text", "Are you sure you want to||save the game?" }, \
+    { "SaveAbortConfirm.Yes", "Yes" }, \
+    { "SaveSucceded.Text", "Saved successfully" }, \
+    { "SaveFailed_WriteFailed.Text", "An error occurred while saving.||Make sure there is enough||free space on the hard disk." }, \
+    { "SaveFailed_WriteFailed.OK", "OK" }, \
+    { "SaveFailed_ReadOnly.Text", "An error occurred while saving.||Make sure the saved games||are not read-only." }, \
+    { "SaveFailed_ReadOnly.OK", "OK" }, \
+    { "DeleteFailed_ReadOnly.Text", "An error occurred while deleting||the saved game.||Make sure the saved games||are not read-only." }, \
+    { "DeleteFailed_ReadOnly.OK", "OK" }, \
+    { "LoadFailed_ReadFailed.Text", "An error occurred while loading the game.||The file could not be read." }, \
+    { "LoadFailed_ReadFailed.OK", "OK" }, \
+    { "LoadFailed_InvalidData.Text", "An error occurred while loading the game.||The selected saved game is not valid." }, \
+    { "LoadFailed_InvalidData.OK", "OK" }, \
+    { 0, 0 }

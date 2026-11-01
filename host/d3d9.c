@@ -64,7 +64,7 @@ Device *g_device;                 /* ...and its state */
 
 static const struct { uint32_t w, h; } g_modes[] = {
     { 640, 480 }, { 800, 600 }, { 1024, 768 }, { 1152, 864 }, { 1280, 720 }, { 1280, 960 }, { 1280, 1024 },
-    { 1600, 1200 },
+    { 1600, 1200 }, { 1920, 1080 },
 };
 #define NMODES (sizeof g_modes / sizeof g_modes[0])
 
@@ -168,6 +168,7 @@ W(d3d_CreateDevice) {
             R32(pp + 12), R32(pp + 16), R32(pp + 24), d->depth_format, ARG(4), R32(pp + 44));
     if (R32(pp) == 0) { W32(pp, d->width); W32(pp + 4, d->height); }
     d->backbuffer = new_surface(d->backbuffer_format, d->width, d->height, 1, 0, 0);
+    { extern int g_game_aspect_w, g_game_aspect_h; g_game_aspect_w = (int)d->width; g_game_aspect_h = (int)d->height; }
     if (d->depth_format) d->depth = new_surface(d->depth_format, d->width, d->height, 0, 1, 0);
     d->st.render_target = d->backbuffer;
     d->st.depth_stencil = d->depth;
@@ -307,6 +308,7 @@ W(dev_Reset) {
         uint32_t old_bb = d->backbuffer, old_ds = d->depth;
         d->width = nw; d->height = nh;
         d->backbuffer = new_surface(d->backbuffer_format, nw, nh, 1, 0, 0);
+        { extern int g_game_aspect_w, g_game_aspect_h; g_game_aspect_w = (int)nw; g_game_aspect_h = (int)nh; }
         if (old_ds) d->depth = new_surface(d->depth_format, nw, nh, 0, 1, 0);
         if (d->st.render_target == old_bb) d->st.render_target = d->backbuffer;
         if (d->st.depth_stencil == old_ds) d->st.depth_stencil = d->depth;
@@ -369,6 +371,20 @@ static void state_hash_tick(uint32_t frame) {
     }
 }
 
+/* RC_FPS (default 30): a steady frame rate. Present waits until the next frame boundary; if the host is slower than that it just
+   goes as fast as it can (and re-syncs after a long stall instead of racing to catch up). */
+static void frame_limit(void) {
+    extern double host_seconds(void);
+    static double next, period;
+    if (period == 0) { const char *e = getenv("RC_FPS"); double f = e ? atof(e) : 30.0; period = f > 1 ? 1.0 / f : -1; }
+    if (period < 0) return;
+    double now = host_seconds();
+    if (next == 0) next = now;
+    next += period;
+    if (next < now - 2 * period) next = now;
+    if (next > now) usleep((useconds_t)((next - now) * 1e6));
+}
+
 W(dev_Present) {
     Device *d = dev(c);
     d->frame++;
@@ -377,6 +393,7 @@ W(dev_Present) {
     input_script_tick(d->frame);
     dump_tick(d->frame);
     vclock_frame();
+    frame_limit();
     state_hash_tick(d->frame);
     static int exit_frame = -1;   /* RC_EXIT_FRAME=N: quit after frame N (benchmarks, determinism checks) */
     if (exit_frame < 0) exit_frame = getenv("RC_EXIT_FRAME") ? atoi(getenv("RC_EXIT_FRAME")) : 0;
@@ -390,8 +407,12 @@ W(dev_Present) {
     if (fps_log < 0) fps_log = getenv("RC_LOG_FPS") != NULL;
     double now = host_seconds();
     if (fps_log && now - last_t >= 2.0) {
-        if (last_t) fprintf(stderr, "[fps] %.1f  (frame %u, %u draws in the last frame)\n",
-                            (d->frame - last_f) / (now - last_t), d->frame, d->draws_this_frame);
+        extern double g_prof_draw, g_prof_present; extern uint64_t g_prof_verts, g_prof_draws_vs;
+        static double pd, pp;
+        if (last_t) fprintf(stderr, "[fps] %.1f  (frame %u, %u draws in the last frame; per frame: draws %.1f ms, present %.1f ms, %llu verts in %llu vs-draws total)\n",
+                            (d->frame - last_f) / (now - last_t), d->frame, d->draws_this_frame,
+                            1e3 * (g_prof_draw - pd) / (d->frame - last_f), 1e3 * (g_prof_present - pp) / (d->frame - last_f), (unsigned long long)g_prof_verts, (unsigned long long)g_prof_draws_vs);
+        pd = g_prof_draw; pp = g_prof_present;
         extern void guest_mem_stats(uint32_t *, uint32_t *);
         uint32_t hu, vu;
         guest_mem_stats(&hu, &vu);

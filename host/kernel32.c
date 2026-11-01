@@ -844,6 +844,16 @@ W(CreateFileA) {
     uint32_t access = ARG(1), disp = ARG(4);
     char host[1024];
     int exists = map_path(name, host, sizeof host);
+    {   /* a Spanish edition: the game's dialog/menu text (POPData.bf) is replaced by an English copy unless RC_LANGUAGE says otherwise */
+        const char *base = strrchr(host, '/'), *lang = getenv("RC_LANGUAGE");
+        extern char g_user_root[1024];
+        extern const char *localize_popdata(const char *orig, const char *out_path);
+        if (exists && base && !strcasecmp(base + 1, "POPData.bf") && (!lang || !strcasecmp(lang, "ENGLISH"))) {
+            static char en[1100];
+            snprintf(en, sizeof en, "%s/POPData.en.bf", g_user_root);
+            if (localize_popdata(host, en)) snprintf(host, sizeof host, "%s", en);
+        }
+    }
     int fl = 0;
     if ((access & 0xC0000000u) == 0xC0000000u) fl = O_RDWR;
     else if (access & 0x40000000u) fl = O_WRONLY;
@@ -892,6 +902,18 @@ W(ReadFile) {
     ssize_t n = 0;
     if (x->remote) remote_ensure(x->remote, (uint64_t)lseek(x->fd, 0, SEEK_CUR), want);
     while (got < want && (n = read(x->fd, HP(ARG(1) + got), want - got)) > 0) got += (uint32_t)n;
+    if (got && strstr(x->path, "DefaultProfile.DAT")) {   /* the global video settings: width at file offset 40, height at 44 (800x600 as shipped) */
+        const char *res = getenv("RC_RESOLUTION");   /* WxH; default 1920x1080 */
+        unsigned w = 1920, h = 1080;
+        if (res && sscanf(res, "%ux%u", &w, &h) != 2) { w = 800; h = 600; }
+        uint32_t vals[2] = { w, h };
+        off_t pos = lseek(x->fd, 0, SEEK_CUR) - (off_t)got;
+        for (int f = 0; f < 2; f++)
+            for (int k = 0; k < 4; k++) {
+                off_t at = 40 + 4 * f + k;
+                if (at >= pos && at < pos + (off_t)got) ((uint8_t *)HP(ARG(1)))[at - pos] = (uint8_t)(vals[f] >> (8 * k));
+            }
+    }
     if (ARG(3)) W32(ARG(3), got);
     static unsigned reads;
     if (g_log && (reads < 40 || getenv("RC_LOG_READS") || reads % 2000 == 0))
@@ -1213,6 +1235,8 @@ W(GetPrivateProfileStringA) {
     const char *def = ARG(2) ? GSTR(ARG(2)) : "";
     if (!ARG(1) || !ini_lookup(GSTR(ARG(5)), ARG(0) ? GSTR(ARG(0)) : NULL, GSTR(ARG(1)), v, sizeof v))
         snprintf(v, sizeof v, "%s", def);
+    if (ARG(1) && !strcasecmp(GSTR(ARG(1)), "Resolutions") && !strstr(v, "1920,1080") && v[0])   /* offer 1080p too */
+        strncat(v, ",1920,1080,32", sizeof v - strlen(v) - 1);
     uint32_t n = ARG(4);
     if (getenv("RC_LOG_INI")) fprintf(stderr, "[ini] %s [%s] %s = '%s' (default '%s')\n", GSTR(ARG(5)), ARG(0) ? GSTR(ARG(0)) : "-", ARG(1) ? GSTR(ARG(1)) : "-", v, def);
     if (n) snprintf((char *)HP(ARG(3)), n, "%s", v);
@@ -1220,6 +1244,7 @@ W(GetPrivateProfileStringA) {
 }
 W(GetPrivateProfileIntA) {
     char v[64];
+    if (ARG(1) && !strcasecmp(GSTR(ARG(1)), "Mode") && getenv("RC_MODE")) RET(4, (uint32_t)atoi(getenv("RC_MODE")));   /* resolution index (debug/override) */
     RET(4, ini_lookup(GSTR(ARG(3)), GSTR(ARG(0)), GSTR(ARG(1)), v, sizeof v) ? (uint32_t)strtol(v, NULL, 0) : ARG(2));
 }
 W(WritePrivateProfileStringA) { STUB("WritePrivateProfileStringA\n"); RET(4, 1); }

@@ -20,6 +20,7 @@ else OUT=out_all; OBJ=obj_all; LIB=librecomp.dylib; TFLAG=; fi
 export OUT OBJ  # used inside the per-file compile command below
 
 "$PY" -I "$R/translator/x86toc.py" "$EXE" "$FUNCS" "$R/$OUT" --all --per-file 300 $TFLAG | head -1
+"$PY" -I "$R/tools/patch_generated.py" "$R/$OUT"
 mkdir -p "$R/build/$OBJ"
 cd "$R"
 ls $OUT/*.c | while read f; do
@@ -36,7 +37,7 @@ clang $OPT $FPFLAGS -w -c -Iruntime runtime/runtime.c -o build/runtime.o
 clang $OPT $FPFLAGS -w -c -Iruntime runtime/interp.c -o build/interp.o
 clang $OPT -w -c -Iruntime tests/difftest_api.c -o build/difftest_api.o
 # link to a temp file and rename, so running test processes keep their mapped copy intact
-clang -dynamiclib -o build/$LIB.tmp build/runtime.o build/interp.o build/difftest_api.o build/$OBJ/*.o -lm
+clang -dynamiclib -undefined dynamic_lookup -o build/$LIB.tmp build/runtime.o build/interp.o build/difftest_api.o build/$OBJ/*.o -lm
 mv -f build/$LIB.tmp build/$LIB
 echo "built build/$LIB"
 

@@ -43,7 +43,7 @@ cd site && python3 serve.py --game "<your game folder>"   # local dev: the page 
 
 Open the page and choose your own game folder; the browser copies it into its private storage (OPFS) once and runs
 `POP3.EXE`. The server must send the cross-origin-isolation headers (`serve.py` does); threads need SharedArrayBuffer.
-Controls: W/A/S/D move, Space jump, Enter select, Alt+Enter fullscreen.
+Controls: W/A/S/D move, Space jump, Enter select, Alt+Enter fullscreen. The game runs at 1920x1080 (`RC_RESOLUTION=WxH` to change) with a 30 fps cap (`RC_FPS`).
 
 ## Debugging
 

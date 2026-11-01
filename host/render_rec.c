@@ -4,6 +4,9 @@
  * lists, running vertex shaders, converting changed textures to RGBA, building uniforms and pipeline
  * keys - and emitting self-contained commands for the executor (render_wgpu.c). Natively every
  * command runs immediately; in the browser commands are queued per frame for the page's thread. */
+#ifdef __APPLE__
+#include <dispatch/dispatch.h>
+#endif
 #include "render.h"
 #include "render_cmd.h"
 #include "vshader.h"
@@ -85,6 +88,7 @@ static void cmd_flush(int ends_frame) { (void)ends_frame; }
 
 static int g_snap_detail;
 static uint32_t g_f_drawn;
+double g_prof_draw, g_prof_present; uint64_t g_prof_verts, g_prof_draws_vs;   /* seconds spent recording draws / presenting (RC_LOG_FPS prints them per frame) */
 static uint32_t g_trace_vs;
 
 static int want_screenshot(uint32_t frame) {
@@ -417,6 +421,37 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
         uint32_t range = n ? hi - lo + 1 : 0;
         int use_range = range <= 2 * n + 64;
         CVert *tmp = use_range ? malloc(sizeof(CVert) * (range ? range : 1)) : NULL;
+        uint32_t count = use_range ? range : n;
+        g_prof_verts += count; g_prof_draws_vs++;
+        static long white = -1;
+        if (white < 0) white = getenv("RC_FORCE_WHITE") ? strtol(getenv("RC_FORCE_WHITE"), NULL, 16) : 0;   /* debugging: ignore the diffuse output (of vertex shader handle N, or all with 1) */
+        const int force_white = white && (white == 1 || (long)st->vs == white);
+        /* shader outputs -> CVerts, chunk by chunk (no shared state, so a draw's vertices can run on several cores) */
+        #define RUN_CHUNK(from, to) do { \
+            VsOut ob[64]; \
+            vs_run_batch(sh, (const float (*)[4])st->vs_const, &vss, use_range ? NULL : idx, lo, (from), (to), ob); \
+            for (uint32_t i = (from); i < (to); i++) { \
+                VsOut *o = &ob[i - (from)]; \
+                CVert *v = use_range ? &tmp[i] : &cv[i]; \
+                v->x = o->pos[0]; v->y = o->pos[1]; v->z = o->pos[2]; v->w = o->pos[3]; \
+                if (force_white) { o->d0[0] = o->d0[1] = o->d0[2] = 0.5f; o->d0[3] = 1.f; } \
+                v->diffuse = pack_color(o->d0); v->specular = pack_color(o->d1); \
+                memcpy(v->tc, o->tex, sizeof v->tc); \
+            } } while (0)
+        if (!g_snap_detail) {
+            extern int vs_is_fixed_function(Shader *);
+            (void)vs_is_fixed_function(sh);   /* decodes the shader before several threads share it */
+#ifdef __APPLE__
+            if (count > 128) {
+                const uint32_t chunk = 64, nchunks = (count + chunk - 1) / chunk;
+                dispatch_apply(nchunks, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^(size_t k) {
+                    uint32_t from = (uint32_t)k * chunk, to = from + chunk < count ? from + chunk : count;
+                    RUN_CHUNK(from, to);
+                });
+            } else
+#endif
+            for (uint32_t from = 0; from < count; from += 64) { uint32_t to = from + 64 < count ? from + 64 : count; RUN_CHUNK(from, to); }
+        } else
         for (uint32_t i = 0; i < (use_range ? range : n); i++) {
             VsOut o;
             extern int vs_trace;
@@ -600,7 +635,9 @@ static void rec_clear(Device *d, uint32_t count, uint32_t rects, uint32_t flags,
 static void rec_draw(Device *d, uint32_t prim, uint32_t prim_count, uint32_t start_vertex, uint32_t num_vertices,
                      const uint8_t *vertices_up, uint32_t up_stride, const void *indices, int index32, uint32_t start_index) {
     rec_enter();
+    double t0_ = host_seconds();
     rec_draw_impl(d, prim, prim_count, start_vertex, num_vertices, vertices_up, up_stride, indices, index32, start_index);
+    g_prof_draw += host_seconds() - t0_;
     {   /* RC_DUMP_AFTER=frame:draw[,draw...]: after those draws of that frame write the target (back buffer or render target) as /tmp/rc_after_<draw>.ppm */
         static const char *spec = (const char *)1;
         if (spec == (const char *)1) spec = getenv("RC_DUMP_AFTER");
@@ -634,7 +671,7 @@ static void rec_draw(Device *d, uint32_t prim, uint32_t prim_count, uint32_t sta
     }
     rec_leave();
 }
-static void rec_present(Device *d) { rec_enter(); rec_present_impl(d); rec_leave(); }
+static void rec_present(Device *d) { rec_enter(); double t0_ = host_seconds(); rec_present_impl(d); g_prof_present += host_seconds() - t0_; rec_leave(); }
 static void rec_readback(Device *d, Surface *s) { rec_enter(); rec_readback_impl(d, s); rec_leave(); }
 static void rec_upload_surface(Device *d, Surface *s) { rec_enter(); rec_upload_surface_impl(d, s); rec_leave(); }
 static void rec_destroy_texture(Texture *t) { rec_enter(); rec_destroy_texture_impl(t); rec_leave(); }

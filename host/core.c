@@ -196,6 +196,25 @@ static char g_cwd[1024] = GUEST_ROOT;  /* the game's current directory, in Windo
 const char *guest_cwd(void) { return g_cwd; }
 void guest_set_cwd(const char *p) { snprintf(g_cwd, sizeof g_cwd, "%s", p); }
 
+/* Language index the game's SetLanguage(0x80dd00) stores: 0 English, 1 French, 2 Spanish, 3 Italian, 4 German (the game's own order).
+   This install is a Spanish edition; RC_LANGUAGE (default ENGLISH) picks the text language (tools/patch_generated.py). */
+uint32_t host_language_override(uint32_t game_choice) {
+    static const char *names[] = { "ENGLISH", "FRENCH", "SPANISH", "ITALIAN", "GERMAN" };
+    const char *l = getenv("RC_LANGUAGE");
+    if (!l) return 0;
+    for (uint32_t i = 0; i < 5; i++) if (!strcasecmp(l, names[i])) return i;
+    return game_choice;
+}
+/* the video size the game starts with (RC_RESOLUTION=WxH, default 1920x1080; 800x600 is what the game ships with) */
+static void video_size(uint32_t *w, uint32_t *h) {
+    unsigned a = 1920, b = 1080;
+    const char *r = getenv("RC_RESOLUTION");
+    if (r && sscanf(r, "%ux%u", &a, &b) != 2) { a = 800; b = 600; }
+    *w = a; *h = b;
+}
+int g_game_aspect_w = 4, g_game_aspect_h = 3;   /* set from the game's back buffer size (host/d3d9.c) */
+uint32_t host_video_width(void) { uint32_t w, h; video_size(&w, &h); return w; }
+uint32_t host_video_height(void) { uint32_t w, h; video_size(&w, &h); return h; }
 int map_path(const char *guest, char *host, size_t n) {
     char full[1024];
     /* make absolute in Windows form */

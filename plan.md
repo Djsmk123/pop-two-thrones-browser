@@ -316,3 +316,19 @@ synchronous XHR range requests from the game thread (worker), writes them into t
 `ENV` object is per thread). Measured from an empty browser store: main menu after ~50 MB, ship-deck intro of level 1 after ~96 MB
 (pop3.bf 70, soundlocal.big 10, sound.big 16), against 1.5 GB for the full copy. The picker import (a folder chosen in the page)
 still copies everything.
+
+## English dialogs, 1080p, 30 fps cap, faster draws
+
+- **English text:** the game's own text file (POPData.bf, Spanish in this edition) holds dialogs and some menu strings. `host/localize.c`
+  writes an English copy to the userdata folder (values replaced from `host/lang_en.txt` by `Section.Key`, size field at header
+  offset 0x2d updated; regenerate `lang_en.h` with `tools/gen_lang.py`) and `CreateFileA` opens that instead (RC_LANGUAGE other than
+  ENGLISH keeps the original). The game's language index itself is forced by `tools/patch_generated.py` (SetLanguage, 0x80dd00).
+- **1080p:** the game stores 800x600 as an immediate pair in a few default-settings functions; `tools/patch_generated.py` replaces
+  that pair with `host_video_width/height()` (`RC_RESOLUTION=WxH`, default 1920x1080; the resolution list the game reads gets
+  1920x1080 appended, the D3D mode list has it too). The window and the web stage take the game's aspect (16:9);
+  `render_wgpu.c` letterboxes to `g_game_aspect_w/h`.
+- **30 fps:** `Present` waits for 1/30 s boundaries (`RC_FPS`, 0 = uncapped). Heavy scenes (menu background, ship deck) still run at
+  ~20-25 fps on the M-series laptop: CPU time is draw recording (vertex shading on the CPU).
+- **Speedups:** draws no longer call `wgpuQueueWriteBuffer` twice each (data is staged and sent once per submit: ~55 -> ~30 ms in the
+  heaviest scene); vertex shaders run 4 vertices at a time (clang vector types) and, on macOS, across cores (`dispatch_apply`).
+  `RC_LOG_FPS=1` now also prints draw-recording and present time per frame.
