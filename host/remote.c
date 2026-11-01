@@ -102,6 +102,8 @@ static void fetch_run(Remote *r, uint32_t first, uint32_t count) {
         else o += (size_t)snprintf(url + o, 4, "%%%02X", ch);
     }
     url[o] = 0;
+    const char *key = getenv("RC_GAME_KEY");   /* serve.py --key */
+    if (key && key[0]) snprintf(url + o, sizeof url - o, "?key=%s", key);
     int got = -1;
     for (int attempt = 0; attempt < 4 && got != len; attempt++) got = rc_fetch_range(url, (double)start, len, buf);
     if (got == len && pwrite(r->wfd, buf, (size_t)len, (off_t)start) == len) {

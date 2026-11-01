@@ -12,6 +12,8 @@ const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const OPFS_DIR = 'rcgame';
 const MARKER = '.installed.json';   // { version } once every file is copied
+const GAME_KEY = params.get('key') || '';   // serve.py --key: sent with every /game/ request (the cookie is only a fallback)
+const gameUrl = (rel) => 'game/' + rel + (GAME_KEY ? '?key=' + encodeURIComponent(GAME_KEY) : '');
 const status = (t) => { $('status').textContent = t; document.body.classList.toggle('err', /^Error|no WebGPU|cross-origin|no usable|no Origin/.test(t)); };
 // the launcher's screens (index.html): loading, home
 const show = (view) => { for (const v of document.querySelectorAll('#panel .view')) v.classList.toggle('hidden', v.id !== 'view-' + view); };
@@ -78,10 +80,11 @@ const REMOTE_MIN = 8e6;
 async function importFromServer() {
   let list;
   try {
-    const r = await fetch('game/_list.json');
+    const r = await fetch(gameUrl('_list.json'));
+    if (r.status === 403) throw new Error('This server keeps the game files private: open the link with its ?key=… part.');
     if (!r.ok) return false;
     list = await r.json();
-  } catch { return false; }
+  } catch (err) { if (/private/.test(err.message)) throw err; return false; }
   if (!list.some((e) => e.path.toLowerCase().endsWith('.exe'))) return false;
   const root = await navigator.storage.getDirectory();
   try { await root.removeEntry(OPFS_DIR, { recursive: true }); } catch {}
@@ -93,7 +96,7 @@ async function importFromServer() {
   $('progress').classList.remove('hidden');
   for (const e of eager) {
     status(`Copying ${e.path} (${mb(done)} / ${mb(total)} MB)`);
-    const resp = await fetch('game/' + e.path.split('/').map(encodeURIComponent).join('/'));
+    const resp = await fetch(gameUrl(e.path.split('/').map(encodeURIComponent).join('/')));
     if (!resp.ok) throw new Error(`${e.path}: ${resp.status}`);
     const w = await (await fileHandle(dir, e.path, true)).createWritable();
     await resp.body.pipeTo(w);
@@ -253,7 +256,8 @@ async function run() {
     preRun: [(m) => {
       if (params.has('mute')) m.ENV.RC_NO_AUDIO = '1';
       m.ENV.RC_EXE = params.get('exe') || 'POP3.EXE';
-      m.ENV.RC_GAME_URL = new URL('game/', location.href).href;   // where host/remote.c fetches on-demand files
+      m.ENV.RC_GAME_URL = new URL('game/', location.href).href;
+      if (GAME_KEY) m.ENV.RC_GAME_KEY = GAME_KEY;   // where host/remote.c fetches on-demand files
       if (params.has('log')) m.ENV.RC_LOG = '1';
       if (params.has('pads')) m.ENV.RC_PADS = params.get('pads');
       if (params.has('queue')) m.ENV.RC_QUEUE = params.get('queue');
