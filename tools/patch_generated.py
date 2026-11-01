@@ -23,14 +23,20 @@ for f in glob.glob(sys.argv[1] + "/*.c"):
         if j - i < 600:
             open(f, "w").write(s[:j] + NEW + s[j + len(OLD):])
             done += 1
-PAIR = re.compile(
-    r"(W32\(\(uint32_t\)\([^;\n]*\), \(uint32_t\)\(\(uint32_t\))0x320u"
-    r"(\)\); /\* mov dword ptr \[[^\]\n]*\], 0x320 \*/\n\s*W32\(\(uint32_t\)\([^;\n]*\), \(uint32_t\)\(\(uint32_t\))0x258u"
-    r"(\)\); /\* mov dword ptr \[[^\]\n]*\], 0x258 \*/)")
-for f in glob.glob(sys.argv[1] + "/*.c"):
-    s = open(f).read()
-    s2, n = PAIR.subn(lambda m: m.group(1) + "({ extern uint32_t host_video_width(void); host_video_width(); })" + m.group(2) + "({ extern uint32_t host_video_height(void); host_video_height(); })" + m.group(3), s)
-    if n:
-        open(f, "w").write(s2)
-        done += n
+def pair_re(w, h):
+    return re.compile(
+        r"(W32\(\(uint32_t\)\([^;\n]*\), \(uint32_t\)\(\(uint32_t\))0x%xu"
+        r"(\)\); /\* mov dword ptr \[[^\]\n]*\], 0x%x \*/\n\s*W32\(\(uint32_t\)\([^;\n]*\), \(uint32_t\)\(\(uint32_t\))0x%xu"
+        r"(\)\); /\* mov dword ptr \[[^\]\n]*\], 0x%x \*/)" % (w, w, h, h))
+
+# the game's mode table sets [esi]=width, [esi+4]=height per mode: 800x600 (the default) and 1024x768 (the in-game default)
+for w, h in ((0x320, 0x258), (0x400, 0x300)):
+    PAIR = pair_re(w, h)
+    for f in glob.glob(sys.argv[1] + "/*.c"):
+        s = open(f).read()
+        s2, n = PAIR.subn(lambda m: m.group(1) + "({ extern uint32_t host_video_width(void); host_video_width(); })" + m.group(2)
+                          + "({ extern uint32_t host_video_height(void); host_video_height(); })" + m.group(3), s)
+        if n:
+            open(f, "w").write(s2)
+            done += n
 print(f"patch_generated: {done} patch(es)")

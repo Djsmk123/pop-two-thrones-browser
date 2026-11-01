@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Two Thrones in the Browser: Architecture</title>
+<style>
+  :root { --bg:#0a0c12; --fg:#f3ecdc; --muted:#b7ad98; --gold:#d9ad55; --gold-hi:#f0c970; --line:rgba(240,201,112,.35); --card:rgba(255,244,220,.06); --ember:#c8502e; --blue:#6aa7ff; --green:#5fd39a; }
+  * { box-sizing:border-box; } html,body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .wrap { width:1200px; margin:0 auto; padding:36px 40px 30px; background:radial-gradient(70% 40% at 50% -5%,rgba(217,173,85,.16),transparent 70%),#0a0c12; }
+  h1 { margin:0; font:700 34px/1.1 Georgia,"Palatino Linotype",serif; letter-spacing:.03em; background:linear-gradient(180deg,#fff3cf,var(--gold-hi) 50%,#8c6a28); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .sub { color:var(--muted); margin:6px 0 22px; font-size:16px; }
+  .row { display:grid; gap:14px; align-items:stretch; }
+  .flow { grid-template-columns:1fr 34px 1fr 34px 1fr 34px 1fr; }
+  .box { border:1px solid var(--line); border-radius:14px; padding:14px 16px; background:var(--card); }
+  .box h3 { margin:0 0 6px; font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--gold); }
+  .box b { display:block; font-size:17px; margin-bottom:4px; }
+  .box p { margin:0; color:var(--muted); font-size:13.5px; }
+  .arrow { display:grid; place-items:center; color:var(--gold); font-size:26px; }
+  .tag { display:inline-block; margin:6px 6px 0 0; padding:2px 9px; border-radius:99px; font-size:11.5px; border:1px solid var(--line); color:var(--fg); }
+  .blue { border-color:rgba(106,167,255,.5); } .blue h3 { color:var(--blue); }
+  .green { border-color:rgba(95,211,154,.5); } .green h3 { color:var(--green); }
+  .ember { border-color:rgba(200,80,46,.6); } .ember h3 { color:#ff8b64; }
+  .layer { margin-top:16px; }
+  .layer > .label { font:600 12px/1 ui-sans-serif; letter-spacing:.2em; text-transform:uppercase; color:var(--muted); margin:0 0 8px 4px; }
+  .three { grid-template-columns:repeat(3,1fr); } .four { grid-template-columns:repeat(4,1fr); }
+  .note { margin-top:18px; display:grid; grid-template-columns:1.2fr 1fr; gap:14px; }
+  .legal { color:var(--muted); font-size:12.5px; margin-top:16px; border-top:1px solid var(--line); padding-top:10px; }
+  code { font:12.5px ui-monospace,Menlo,monospace; color:var(--gold-hi); }
+</style></head><body><div class="wrap">
+  <h1>Prince of Persia: The Two Thrones, in a browser tab</h1>
+  <div class="sub">A 2005 Windows game, statically recompiled to WebAssembly. Your own copy of the game, streamed on demand, rendered with WebGPU.</div>
+
+  <div class="layer"><div class="label">The pipeline</div>
+  <div class="row flow">
+    <div class="box ember"><h3>1 · Analyse</h3><b>POP3.EXE (x86)</b><p>Ghidra finds 29,000 functions. A Python translator turns 2.8M x86 instructions into C: registers, flags, x87, MMX/SSE.</p><span class="tag">Ghidra</span><span class="tag">Python</span><span class="tag">capstone</span></div>
+    <div class="arrow">→</div>
+    <div class="box"><h3>2 · Compile</h3><b>C → native + Wasm</b><p>One generated C codebase builds a macOS binary (for debugging) and, with Emscripten, WebAssembly with threads.</p><span class="tag">clang</span><span class="tag">Emscripten</span><span class="tag">pthreads</span></div>
+    <div class="arrow">→</div>
+    <div class="box blue"><h3>3 · Run</h3><b>A Windows layer in C</b><p>kernel32 / user32, DirectInput, DirectSound, Bink and Direct3D 9, re-implemented as host functions the generated code calls.</p><span class="tag">Win32</span><span class="tag">D3D9</span><span class="tag">DirectSound</span></div>
+    <div class="arrow">→</div>
+    <div class="box green"><h3>4 · Show</h3><b>WebGPU + Web Audio</b><p>Recorded D3D9 draws replay as WebGPU passes. Mixed audio flows through an AudioWorklet ring buffer.</p><span class="tag">WebGPU</span><span class="tag">AudioWorklet</span></div>
+  </div></div>
+
+  <div class="layer"><div class="label">Inside the browser</div>
+  <div class="row four">
+    <div class="box"><h3>Page thread</h3><b>Launcher + renderer</b><p>Owns the canvas. Replays recorded draw commands with WebGPU, handles keyboard, mouse and gamepad.</p></div>
+    <div class="box"><h3>Game thread (worker)</h3><b>The recompiled game</b><p>Runs the translated code. D3D9 calls are recorded as commands; vertex shaders run on the CPU, four vertices at a time.</p></div>
+    <div class="box"><h3>Audio</h3><b>Software mixer</b><p>Re-implements DirectSound: 3D positioning, limiter, fades. A shared ring buffer feeds the audio clock.</p></div>
+    <div class="box"><h3>Files</h3><b>Streamed on demand</b><p>Big archives become sparse files in OPFS; 1 MB chunks are fetched by range request the first time the game reads them. About 100 MB to reach level 1, not 1.5 GB.</p></div>
+  </div></div>
+
+  <div class="note">
+    <div class="box"><h3>Hard problems solved along the way</h3>
+      <p>• A lost wake-up in the game's I/O thread pool froze level loading (a sleep-poll wait hid it).<br>
+         • Black sky and sea: Direct3D and WebGPU cull modes map straight through, swapping them removed the sky.<br>
+         • Crackling audio, traced from the speaker back to one wrong cast: a signed 32-bit read became unsigned, so MMX mixing clipped.<br>
+         • 1080p: the game's 800×600 default patched in the generated code; 16:9 letterboxing in the renderer.</p></div>
+    <div class="box"><h3>Numbers</h3>
+      <p><b style="display:inline">29,008</b> functions · <b style="display:inline">2.8M</b> instructions translated<br>
+         <b style="display:inline">~100 MB</b> streamed to reach level 1<br>
+         <b style="display:inline">1920×1080</b> · 30 fps cap · 20–30 fps on a laptop today<br>
+         <b style="display:inline">0</b> game files in the repository</p></div>
+  </div>
+  <div class="legal">The repository contains only the translator, the Windows layer, the renderer and the web launcher. You supply your own legitimately obtained copy of the game; it is read in your browser and never uploaded. Prince of Persia is a trademark of Ubisoft; this is an unaffiliated technical experiment.</div>
+</div></body></html>
