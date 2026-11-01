@@ -37,7 +37,8 @@ under `userdata/`.
 ```
 OPT=-O1 PROFILE=work/profile.h ./build_web.sh     # -> build_web/www and build_web/node
 ./make_site.sh                                    # -> site/ (index.html, loader.js, build/recomp.{js,wasm}; no game files)
-cd site && python3 serve.py                       # http://localhost:8007/
+cd site && python3 serve.py                       # http://localhost:8007/  (choose your game folder in the page)
+cd site && python3 serve.py --game "<your game folder>"   # local dev: the page copies it itself, no file dialog
 ```
 
 Open the page and choose your own game folder; the browser copies it into its private storage (OPFS) once and runs

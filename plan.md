@@ -275,3 +275,11 @@ only if t0 is in 0..1 and the LUT is a 2D texture bound with clamp addressing).
 - Crackling: the DirectSound play cursor ran ahead of what the speakers play (the output queue was not accounted for), so the game refilled
   streaming buffers over sound not yet heard. The reported cursor now lags by the queued frames (`g_out_latency`; in the browser, the ring
   fill), and CoreAudio uses 4 x 1024-frame buffers instead of 3 x 512 (fewer underruns).
+
+## Browser run (2026-11-01)
+- `web/serve.py --game <folder>` serves the player's own install at `/game/` (local development only) and `web/loader.js` copies it into OPFS
+  itself when `/game/_list.json` exists, so no file dialog is needed. Ran in Chrome on localhost: profile creation, English menus, difficulty,
+  level load, the in-engine intro cutscene and sea/sky all rendered over WebGPU; real keyboard input worked. Not yet checked there: playing
+  past the intro, combat, audio quality, speed.
+- The page still shows the Cricket "Play Solo / Play Multiplayer" cards; Multiplayer (netplay) does not apply to this game.
+- No git remote is configured in this repository, so nothing could be pushed; commits are local.

@@ -79,6 +79,37 @@ async function importFromPicker(fileList) {
   $('progress').classList.add('hidden');
 }
 
+// Local development: `serve.py --game <folder>` serves the player's own install at /game/; copy it without the file dialog.
+async function importFromServer() {
+  let list;
+  try {
+    const r = await fetch('game/_list.json');
+    if (!r.ok) return false;
+    list = await r.json();
+  } catch { return false; }
+  if (!list.some((e) => e.path.toLowerCase().endsWith('.exe'))) return false;
+  const root = await navigator.storage.getDirectory();
+  try { await root.removeEntry(OPFS_DIR, { recursive: true }); } catch {}
+  await navigator.storage.persist?.();
+  const dir = await gameDir(true);
+  const total = list.reduce((s, e) => s + e.size, 0);
+  let done = 0;
+  $('progress').classList.remove('hidden');
+  for (const e of list) {
+    status(`Copying ${e.path} (${mb(done)} / ${mb(total)} MB)`);
+    const resp = await fetch('game/' + e.path.split('/').map(encodeURIComponent).join('/'));
+    const w = await (await fileHandle(dir, e.path, true)).createWritable();
+    await resp.body.pipeTo(w);
+    done += e.size;
+    $('progress').value = done / total;
+  }
+  const sig = list.map((e) => `${e.path}:${e.size}`).sort().join('\n');
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sig));
+  await writeMarker([...new Uint8Array(digest)].slice(0, 6).map((b) => b.toString(16).padStart(2, '0')).join(''));
+  $('progress').classList.add('hidden');
+  return true;
+}
+
 // ------------------------------------------------------------------ input
 
 // KeyboardEvent.code -> USB HID usage (what host/input.c's key table uses)
@@ -374,6 +405,7 @@ async function boot() {
 
   $('reset').onclick = (e) => { e.preventDefault(); show('loading'); showPicker('Choose your Two Thrones folder.'); };
   if (!(await readMarker())) {
+    if (await importFromServer().catch((err) => { status(err.message); return false; })) { ready(); return; }
     showPicker('Choose your Two Thrones folder to start.');
     return;
   }
