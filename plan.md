@@ -283,3 +283,13 @@ only if t0 is in 0..1 and the LUT is a 2D texture bound with clamp addressing).
   past the intro, combat, audio quality, speed.
 - The page still shows the Cricket "Play Solo / Play Multiplayer" cards; Multiplayer (netplay) does not apply to this game.
 - No git remote is configured in this repository, so nothing could be pushed; commits are local.
+
+## Crackle round 2 (audio smoothing)
+
+Causes found by reading the mixer, not yet confirmed by ear: (1) channel gains were recomputed per 10 ms chunk, so any
+volume, pan or 3D-position change was a step in the waveform (zipper noise); (2) `Stop` cut a buffer instantly and `Play`
+started it at full gain (clicks); (3) in the browser the mixer thread was paced by the host clock while the AudioWorklet is
+paced by the audio clock, so the ring slowly drifted into underruns (silence) or drops.
+Fixes: per-sample gain slew (~2 ms) in `advance()`, a 192-frame fade-out after `Stop`, fade-in on `Play`; the web mixer now
+tops the ring up to ~80 ms instead of free-running, and the worklet waits for 1024 queued frames, fades out on underrun
+and fades back in.

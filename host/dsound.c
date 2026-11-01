@@ -25,6 +25,8 @@ typedef struct SBuf {
     uint32_t rate, freq;          /* format rate, current playback frequency */
     int32_t volume, pan;          /* hundredths of a dB */
     int playing, looping;
+    float gl_cur, gr_cur;         /* smoothed channel gains: a jump in volume, pan or 3D position is a click */
+    int fade;                     /* frames left of the fade-out after Stop (an abrupt cut is a click) */
     double pos;                   /* play cursor in frames (fractional for resampling) */
     uint32_t notify_n, notify_off[64], notify_ev[64];
     int is3d;                     /* DSBCAPS_CTRL3D and not DS3DMODE_DISABLE */
@@ -84,7 +86,19 @@ static void sample_at(SBuf *b, uint32_t frame, float *l, float *r) {
 }
 
 /* Advances a buffer by `out_frames` output frames, mixing into `mix` (may be NULL), firing notifications. */
+#define FADE_FRAMES 192
 static void advance(SBuf *b, float *mix, int out_frames) {
+    if (!b->playing && b->fade > 0 && mix && !b->primary && b->mem) {   /* tail of a stopped buffer */
+        uint32_t fb = frame_bytes(b), nf = fb ? b->size / fb : 0;
+        double step = (double)(b->freq ? b->freq : b->rate) / MIX_RATE;
+        for (int i = 0; i < out_frames && b->fade > 0 && nf; i++, b->fade--) {
+            float l, r, m = (float)b->fade / FADE_FRAMES;
+            sample_at(b, (uint32_t)b->pos < nf ? (uint32_t)b->pos : nf - 1, &l, &r);
+            mix[2 * i] += l * b->gl_cur * m; mix[2 * i + 1] += r * b->gr_cur * m;
+            b->pos += step; if (b->pos >= nf) b->pos -= nf;
+        }
+        return;
+    }
     if (!b->playing || b->primary || !b->mem) return;
     uint32_t fb = frame_bytes(b);
     uint32_t nframes = fb ? b->size / fb : 0;
@@ -105,8 +119,10 @@ static void advance(SBuf *b, float *mix, int out_frames) {
             sample_at(b, f2, &l2, &r2);
             float fr = (float)(b->pos - f);   /* linear interpolation: no zero-order-hold aliasing */
             l += (l2 - l) * fr; r += (r2 - r) * fr;
-            mix[2 * i] += l * gl;
-            mix[2 * i + 1] += r * gr;
+            b->gl_cur += (gl - b->gl_cur) * (1.f / 96.f);   /* ~2 ms slew */
+            b->gr_cur += (gr - b->gr_cur) * (1.f / 96.f);
+            mix[2 * i] += l * b->gl_cur;
+            mix[2 * i + 1] += r * b->gr_cur;
         }
         double np = b->pos + step;
         uint32_t ob = f * fb, nb = (uint32_t)np * fb;
@@ -173,13 +189,14 @@ static int start_coreaudio(void) {
 /* Browser: mixed audio goes into a ring in shared memory that the page's AudioWorklet reads
    (web/loader.js). The ring holds stereo float frames; w and r count frames written and read. */
 #include <emscripten.h>
-#define RING_FRAMES 8192u   /* ~185 ms at 44.1 kHz */
+#define RING_FRAMES 16384u   /* ~370 ms at 44.1 kHz */
+#define RING_TARGET 3528u    /* keep ~80 ms queued: enough to ride out scheduling jitter, short enough to stay in sync */
 static struct { volatile uint32_t w, r, rate, frames; float data[RING_FRAMES * 2]; } g_ring = { 0, 0, MIX_RATE, RING_FRAMES, { 0 } };
 EMSCRIPTEN_KEEPALIVE uint32_t rc_audio_ring(void) { return (uint32_t)(uintptr_t)&g_ring; }
 
 static void ring_write(const float *f, int frames) {
     uint32_t w = __atomic_load_n(&g_ring.w, __ATOMIC_ACQUIRE), r = __atomic_load_n(&g_ring.r, __ATOMIC_ACQUIRE);
-    if (w - r + (uint32_t)frames > RING_FRAMES / 2) return;   /* nobody listening or behind: drop (keeps latency low) */
+    if (w - r + (uint32_t)frames > RING_FRAMES) return;
     g_out_latency = w - r;   /* frames waiting in the ring */
     for (int i = 0; i < frames; i++) {
         uint32_t k = (w + (uint32_t)i) % RING_FRAMES;
@@ -187,6 +204,7 @@ static void ring_write(const float *f, int frames) {
     }
     __atomic_store_n(&g_ring.w, w + (uint32_t)frames, __ATOMIC_RELEASE);
 }
+static void ring_write_mix(float *tmp) { mix_frames(tmp, 441); ring_write(tmp, 441); }
 #endif
 
 /* Without an audio device, a thread still advances cursors in real time so streaming keeps working
@@ -207,12 +225,20 @@ static void *silent_mixer(void *arg) {
             sched_wait(NULL, NULL, next, NULL);
         }
     }
+#ifdef __EMSCRIPTEN__
+    /* The page's audio clock drains the ring; this thread tops it up to RING_TARGET. Pacing on the host clock
+       instead drifts against the audio clock, and every drift step is an underrun (silence: a click) or a drop. */
+    if (!getenv("RC_NO_AUDIO")) {
+        for (;;) {
+            uint32_t w = __atomic_load_n(&g_ring.w, __ATOMIC_ACQUIRE), r = __atomic_load_n(&g_ring.r, __ATOMIC_ACQUIRE);
+            if (w - r < RING_TARGET) ring_write_mix(tmp);
+            else usleep(2000);
+        }
+    }
+#endif
     double next = host_seconds();
     for (unsigned n = 0;; n++) {
         mix_frames(tmp, 441);                 /* 10 ms */
-#ifdef __EMSCRIPTEN__
-        if (!getenv("RC_NO_AUDIO")) ring_write(tmp, 441);
-#endif
         if (n % 500 == 0) LOG("[dsound] mixer alive (%u)\n", n);
         next += 441.0 / MIX_RATE;
         double now = host_seconds();
@@ -311,6 +337,7 @@ W(b_Play) {
     SBuf *b = buf(c);
     start_mixer();
     pthread_mutex_lock(&g_snd_lock);
+    if (!b->playing) { b->gl_cur = b->gr_cur = 0.f; b->fade = 0; }
     b->playing = 1;
     b->looping = (ARG(3) & 1) != 0;
     pthread_mutex_unlock(&g_snd_lock);
@@ -333,7 +360,7 @@ W(b_SetFormat) {
 W(b_SetVolume) { buf(c)->volume = (int32_t)ARG(1); RET(2, S_OK); }
 W(b_SetPan) { buf(c)->pan = (int32_t)ARG(1); RET(2, S_OK); }
 W(b_SetFrequency) { SBuf *b = buf(c); b->freq = ARG(1) ? ARG(1) : b->rate; RET(2, S_OK); }
-W(b_Stop) { SBuf *b = buf(c); pthread_mutex_lock(&g_snd_lock); b->playing = 0; pthread_mutex_unlock(&g_snd_lock); RET(1, S_OK); }
+W(b_Stop) { SBuf *b = buf(c); pthread_mutex_lock(&g_snd_lock); if (b->playing) b->fade = FADE_FRAMES; b->playing = 0; pthread_mutex_unlock(&g_snd_lock); RET(1, S_OK); }
 W(b_Unlock) { RET(5, S_OK); }
 W(b_Restore) { RET(1, S_OK); }
 
