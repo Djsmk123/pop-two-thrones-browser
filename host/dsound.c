@@ -27,6 +27,9 @@ typedef struct SBuf {
     int playing, looping;
     double pos;                   /* play cursor in frames (fractional for resampling) */
     uint32_t notify_n, notify_off[64], notify_ev[64];
+    int is3d;                     /* DSBCAPS_CTRL3D and not DS3DMODE_DISABLE */
+    uint32_t mode3d;              /* DS3DMODE_NORMAL 0, HEADRELATIVE 1, DISABLE 2 */
+    float pos3[3], mind, maxd;    /* 3D position and distance range */
     struct SBuf *next;
 } SBuf;
 
@@ -36,6 +39,33 @@ static int g_mixer_started;
 
 static ComInterface IDirectSound_i, IDirectSoundBuffer_i, IDirectSoundNotify_i, IDirectSound3DBuffer_i,
     IDirectSound3DListener_i;
+
+/* Frames already mixed but not yet audible (the output queue). The play cursor the game sees must lag by that much: it
+   refills the part of a streaming buffer behind the cursor, and with the cursor ahead of the speakers it overwrote sound
+   that had not played yet (crackling). */
+static volatile uint32_t g_out_latency = 0;
+
+/* 3D listener (one per primary buffer; the game has one) */
+static float g_lpos[3], g_lfront[3] = { 0, 0, 1 }, g_ltop[3] = { 0, 1, 0 }, g_rolloff = 1.f, g_distfactor = 1.f;
+static float rf(uint32_t bits) { float f; memcpy(&f, &bits, 4); return f; }
+
+/* distance attenuation (DirectSound: inverse distance beyond the minimum, rolloff-scaled) and left/right pan */
+static void spatial(const SBuf *b, float *gain, float *pan) {
+    *gain = 1.f; *pan = 0.f;
+    if (!b->is3d) return;
+    float d[3];
+    for (int i = 0; i < 3; i++) d[i] = (b->pos3[i] - (b->mode3d == 1 ? 0.f : g_lpos[i])) * g_distfactor;
+    float dist = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    float mn = b->mind > 0.f ? b->mind * g_distfactor : g_distfactor, mx = b->maxd > 0.f ? b->maxd * g_distfactor : 1e9f;
+    if (dist > mx) dist = mx;
+    if (dist > mn) *gain = mn / (mn + g_rolloff * (dist - mn));
+    if (dist > 1e-4f) {
+        const float *f = g_lfront, *t = g_ltop;   /* left-handed: right = top x front */
+        float right[3] = { t[1] * f[2] - t[2] * f[1], t[2] * f[0] - t[0] * f[2], t[0] * f[1] - t[1] * f[0] };
+        *pan = (d[0] * right[0] + d[1] * right[1] + d[2] * right[2]) / dist;
+        if (*pan > 1.f) *pan = 1.f; else if (*pan < -1.f) *pan = -1.f;
+    }
+}
 
 /* ------------------------------------------------------------------ mixing */
 
@@ -61,13 +91,20 @@ static void advance(SBuf *b, float *mix, int out_frames) {
     if (!nframes) return;
     double step = (double)(b->freq ? b->freq : b->rate) / MIX_RATE;
     float gain = b->volume <= -10000 ? 0.f : powf(10.f, b->volume / 2000.f);
-    float gl = gain * (b->pan > 0 ? powf(10.f, -b->pan / 2000.f) : 1.f);
-    float gr = gain * (b->pan < 0 ? powf(10.f, b->pan / 2000.f) : 1.f);
+    float sg, sp;
+    spatial(b, &sg, &sp);
+    gain *= sg;
+    float gl = gain * (b->pan > 0 ? powf(10.f, -b->pan / 2000.f) : 1.f) * (sp > 0 ? 1.f - sp : 1.f);
+    float gr = gain * (b->pan < 0 ? powf(10.f, b->pan / 2000.f) : 1.f) * (sp < 0 ? 1.f + sp : 1.f);
     for (int i = 0; i < out_frames && b->playing; i++) {
         uint32_t f = (uint32_t)b->pos;
         if (mix) {
-            float l, r;
+            float l, r, l2, r2;
             sample_at(b, f, &l, &r);
+            uint32_t f2 = f + 1 < nframes ? f + 1 : (b->looping ? 0 : f);
+            sample_at(b, f2, &l2, &r2);
+            float fr = (float)(b->pos - f);   /* linear interpolation: no zero-order-hold aliasing */
+            l += (l2 - l) * fr; r += (r2 - r) * fr;
             mix[2 * i] += l * gl;
             mix[2 * i + 1] += r * gr;
         }
@@ -96,9 +133,15 @@ static void mix_frames(float *out, int frames) {
     pthread_mutex_lock(&g_snd_lock);
     for (SBuf *b = g_bufs; b; b = b->next) advance(b, out, frames);
     pthread_mutex_unlock(&g_snd_lock);
-    for (int i = 0; i < 2 * frames; i++) out[i] = out[i] > 1.f ? 1.f : out[i] < -1.f ? -1.f : out[i];
+    for (int i = 0; i < 2 * frames; i++) {   /* soft limiter: many loud buffers add up, hard clipping sounds like blasting */
+        float x = out[i] * 0.8f, a = fabsf(x);
+        if (a > 0.7f) x = copysignf(0.7f + 0.3f * tanhf((a - 0.7f) / 0.3f), x);
+        out[i] = x;
+    }
 }
 
+#define AQ_FRAMES 1024
+#define AQ_BUFFERS 4
 #ifdef __APPLE__
 static void aq_callback(void *ud, AudioQueueRef q, AudioQueueBufferRef buf) {
     (void)ud;
@@ -116,11 +159,12 @@ static int start_coreaudio(void) {
     f.mBitsPerChannel = 32;
     AudioQueueRef q;
     if (AudioQueueNewOutput(&f, aq_callback, NULL, NULL, NULL, 0, &q)) return 0;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < AQ_BUFFERS; i++) {
         AudioQueueBufferRef b;
-        AudioQueueAllocateBuffer(q, 512 * 8, &b);  /* ~12 ms per buffer */
+        AudioQueueAllocateBuffer(q, AQ_FRAMES * 8, &b);  /* ~23 ms per buffer; small ones underran when the game was busy */
         aq_callback(NULL, q, b);
     }
+    g_out_latency = AQ_BUFFERS * AQ_FRAMES - AQ_FRAMES / 2;   /* queued, minus the buffer being refilled right now */
     return AudioQueueStart(q, NULL) == 0;
 }
 #endif
@@ -136,6 +180,7 @@ EMSCRIPTEN_KEEPALIVE uint32_t rc_audio_ring(void) { return (uint32_t)(uintptr_t)
 static void ring_write(const float *f, int frames) {
     uint32_t w = __atomic_load_n(&g_ring.w, __ATOMIC_ACQUIRE), r = __atomic_load_n(&g_ring.r, __ATOMIC_ACQUIRE);
     if (w - r + (uint32_t)frames > RING_FRAMES / 2) return;   /* nobody listening or behind: drop (keeps latency low) */
+    g_out_latency = w - r;   /* frames waiting in the ring */
     for (int i = 0; i < frames; i++) {
         uint32_t k = (w + (uint32_t)i) % RING_FRAMES;
         g_ring.data[2 * k] = f[2 * i]; g_ring.data[2 * k + 1] = f[2 * i + 1];
@@ -214,9 +259,17 @@ W(b_GetCaps) {
 W(b_GetCurrentPosition) {
     SBuf *b = buf(c);
     pthread_mutex_lock(&g_snd_lock);
-    uint32_t play = b->primary ? 0 : (uint32_t)b->pos * frame_bytes(b);
+    double ppos = b->pos;
+    {   /* what is audible now is what was mixed g_out_latency output frames ago */
+        double lag = (double)g_out_latency * (double)(b->freq ? b->freq : b->rate) / MIX_RATE;
+        uint32_t nf = frame_bytes(b) ? b->size / frame_bytes(b) : 0;
+        ppos -= lag;
+        if (ppos < 0) ppos = b->looping && nf ? ppos + nf * ceil(-ppos / nf) : 0;
+    }
+    uint32_t play = b->primary ? 0 : (uint32_t)ppos * frame_bytes(b);
     pthread_mutex_unlock(&g_snd_lock);
     uint32_t write = b->size ? (play + 4 * frame_bytes(b) * 64) % b->size : 0;  /* write cursor a little ahead */
+    { static unsigned n; static int on = -1; if (on < 0) on = getenv("RC_LOG_DSPOS") != NULL; if (on && n++ % 300 == 0) LOG("[dsound] pos buf %08x play %u write %u size %u playing %d\n", THIS, play, write, b->size, b->playing); }
     if (ARG(1)) W32(ARG(1), play);
     if (ARG(2)) W32(ARG(2), write);
     RET(3, S_OK);
@@ -292,8 +345,10 @@ static const ComMethod buf_methods[] = {
     { "SetCurrentPosition", 1, b_SetCurrentPosition }, { "SetFormat", 1, b_SetFormat },
     { "SetVolume", 1, b_SetVolume }, { "SetPan", 1, b_SetPan }, { "SetFrequency", 1, b_SetFrequency },
     { "Stop", 0, b_Stop }, { "Unlock", 4, b_Unlock }, { "Restore", 0, b_Restore },
+    /* IDirectSoundBuffer8 */
+    { "SetFX", 3, NULL }, { "AcquireResources", 3, NULL }, { "GetObjectInPath", 4, NULL },
 };
-static ComInterface IDirectSoundBuffer_i = { "IDirectSoundBuffer", buf_methods, 21, 0 };
+static ComInterface IDirectSoundBuffer_i = { "IDirectSoundBuffer", buf_methods, 24, 0 };
 
 /* IDirectSoundNotify */
 W(n_SetNotificationPositions) {
@@ -313,23 +368,43 @@ static const ComMethod notify_methods[] = {
 static ComInterface IDirectSoundNotify_i = { "IDirectSoundNotify", notify_methods, 4, 0 };
 
 /* 3D interfaces: accepted, ignored for now (sound stays 2D) */
+W(b3_SetPosition) { SBuf *b = com_data(THIS); for (int i = 0; i < 3; i++) b->pos3[i] = rf(ARG(1 + i)); RET(5, S_OK); }
+W(b3_SetMinDistance) { SBuf *b = com_data(THIS); b->mind = rf(ARG(1)); RET(3, S_OK); }
+W(b3_SetMaxDistance) { SBuf *b = com_data(THIS); b->maxd = rf(ARG(1)); RET(3, S_OK); }
+W(b3_SetMode) { SBuf *b = com_data(THIS); b->mode3d = ARG(1); b->is3d = ARG(1) != 2; RET(3, S_OK); }
+W(b3_SetAllParameters) {
+    SBuf *b = com_data(THIS); uint32_t p = ARG(1);
+    for (int i = 0; i < 3; i++) b->pos3[i] = rf(R32(p + 4 + 4 * i));
+    b->mind = rf(R32(p + 52)); b->maxd = rf(R32(p + 56)); b->mode3d = R32(p + 60); b->is3d = b->mode3d != 2;
+    RET(3, S_OK);
+}
+W(l3_SetPosition) { for (int i = 0; i < 3; i++) g_lpos[i] = rf(ARG(1 + i)); RET(5, S_OK); }
+W(l3_SetOrientation) { for (int i = 0; i < 3; i++) { g_lfront[i] = rf(ARG(1 + i)); g_ltop[i] = rf(ARG(4 + i)); } RET(8, S_OK); }
+W(l3_SetRolloffFactor) { g_rolloff = rf(ARG(1)); RET(3, S_OK); }
+W(l3_SetDistanceFactor) { g_distfactor = rf(ARG(1)) > 0.f ? rf(ARG(1)) : 1.f; RET(3, S_OK); }
+W(l3_SetAllParameters) {
+    uint32_t p = ARG(1);
+    for (int i = 0; i < 3; i++) { g_lpos[i] = rf(R32(p + 4 + 4 * i)); g_lfront[i] = rf(R32(p + 28 + 4 * i)); g_ltop[i] = rf(R32(p + 40 + 4 * i)); }
+    g_distfactor = rf(R32(p + 52)) > 0.f ? rf(R32(p + 52)) : 1.f; g_rolloff = rf(R32(p + 56));
+    RET(3, S_OK);
+}
 static const ComMethod b3d_methods[] = {
     { "QueryInterface", 2, com_QueryInterface }, { "AddRef", 0, com_AddRef }, { "Release", 0, com_Release },
     { "GetAllParameters", 1, NULL }, { "GetConeAngles", 2, NULL }, { "GetConeOrientation", 1, NULL },
     { "GetConeOutsideVolume", 1, NULL }, { "GetMaxDistance", 1, NULL }, { "GetMinDistance", 1, NULL },
     { "GetMode", 1, NULL }, { "GetPosition", 1, NULL }, { "GetVelocity", 1, NULL },
-    { "SetAllParameters", 2, NULL }, { "SetConeAngles", 3, NULL }, { "SetConeOrientation", 4, NULL },
-    { "SetConeOutsideVolume", 2, NULL }, { "SetMaxDistance", 2, NULL }, { "SetMinDistance", 2, NULL },
-    { "SetMode", 2, NULL }, { "SetPosition", 4, NULL }, { "SetVelocity", 4, NULL },
+    { "SetAllParameters", 2, b3_SetAllParameters }, { "SetConeAngles", 3, NULL }, { "SetConeOrientation", 4, NULL },
+    { "SetConeOutsideVolume", 2, NULL }, { "SetMaxDistance", 2, b3_SetMaxDistance }, { "SetMinDistance", 2, b3_SetMinDistance },
+    { "SetMode", 2, b3_SetMode }, { "SetPosition", 4, b3_SetPosition }, { "SetVelocity", 4, NULL },
 };
 static ComInterface IDirectSound3DBuffer_i = { "IDirectSound3DBuffer", b3d_methods, 21, 0 };
 static const ComMethod l3d_methods[] = {
     { "QueryInterface", 2, com_QueryInterface }, { "AddRef", 0, com_AddRef }, { "Release", 0, com_Release },
     { "GetAllParameters", 1, NULL }, { "GetDistanceFactor", 1, NULL }, { "GetDopplerFactor", 1, NULL },
     { "GetOrientation", 2, NULL }, { "GetPosition", 1, NULL }, { "GetRolloffFactor", 1, NULL },
-    { "GetVelocity", 1, NULL }, { "SetAllParameters", 2, NULL }, { "SetDistanceFactor", 2, NULL },
-    { "SetDopplerFactor", 2, NULL }, { "SetOrientation", 7, NULL }, { "SetPosition", 4, NULL },
-    { "SetRolloffFactor", 2, NULL }, { "SetVelocity", 4, NULL }, { "CommitDeferredSettings", 0, NULL },
+    { "GetVelocity", 1, NULL }, { "SetAllParameters", 2, l3_SetAllParameters }, { "SetDistanceFactor", 2, l3_SetDistanceFactor },
+    { "SetDopplerFactor", 2, NULL }, { "SetOrientation", 7, l3_SetOrientation }, { "SetPosition", 4, l3_SetPosition },
+    { "SetRolloffFactor", 2, l3_SetRolloffFactor }, { "SetVelocity", 4, NULL }, { "CommitDeferredSettings", 0, NULL },
 };
 static ComInterface IDirectSound3DListener_i = { "IDirectSound3DListener", l3d_methods, 18, 0 };
 
@@ -344,6 +419,7 @@ static uint32_t new_buffer(uint32_t desc) {
     b->channels = 2; b->bits = 16; b->rate = MIX_RATE;
     if (wfx) { b->channels = R16(wfx + 2); b->rate = R32(wfx + 4); b->bits = R16(wfx + 14); }
     b->freq = b->rate;
+    b->is3d = !b->primary && (b->flags & 0x10) != 0; b->mind = 1.f; b->maxd = 1e9f;
     if (!b->primary && b->size) b->mem = heap_alloc(b->size + 16, 1);
     pthread_mutex_lock(&g_snd_lock);
     b->next = g_bufs;

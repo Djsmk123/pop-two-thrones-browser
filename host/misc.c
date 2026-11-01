@@ -122,6 +122,7 @@ static uint64_t timers_next_due_us(void) {
     return best;
 }
 
+int kernel_event_state(unsigned h);
 static void *timer_main(void *arg) {
     (void)arg;
     sched_enter(g_timer_sched);
@@ -179,7 +180,36 @@ static void *timer_main(void *arg) {
         pthread_mutex_unlock(&g_timer_lock);
         uint32_t a[5] = { tm.id, 0, tm.user, 0, 0 };
         static unsigned fired;
-        if (fired++ % 500 == 0) LOG("[winmm] timer callbacks so far: %u\n", fired);
+        if (fired++ % 500 == 0) {
+            LOG("[winmm] timer callbacks so far: %u\n", fired);
+            if (getenv("RC_DUMP_DARE")) {   /* POP3: the sound engine's pending-resource list [e6a844] */
+                uint32_t node = R32(0xe6a844);
+                for (int k = 0; node && k < 16; k++, node = R32(node)) {
+                    uint32_t res = R32(node + 8), n = R32(res + 0x2c), arr = R32(res + 0x28);
+                    fprintf(stderr, "[dare] node %08x res %08x state %u subs %u:", node, res, R32(res + 0x24), n);
+                    for (uint32_t i = 0; i < n && i < 64; i++) {
+                        uint32_t sub = R32(arr + 12 * i + 4);
+                        if (sub) fprintf(stderr, " #%u[%08x st=%u +28=%x +2c=%x]", i, sub, sub ? R32(sub + 0x24) : 0, sub ? R32(sub + 0x28) : 0, sub ? R32(sub + 0x2c) : 0);
+                    }
+                    fprintf(stderr, "\n");
+                }
+            }
+            if (getenv("RC_DUMP_DARE"))
+                for (uint32_t pool = 0x60408070 - 0x100; pool <= 0x60408070 + 0x100; pool += 8)
+                  { if (R32(pool) == 0x98b6cc)
+                        fprintf(stderr, "[pool] %08x sig %d,%d ev %x %x thr %x pending(+3c) %u canc(+48) %u state(+34) %u flag(+4c) %u\n", pool, kernel_event_state(R32(pool + 0x28)), kernel_event_state(R32(pool + 0x2c)),
+                                R32(pool + 0x28), R32(pool + 0x2c), R32(pool + 0x30), R32(pool + 0x3c), R32(pool + 0x48), R32(pool + 0x34), R32(pool + 0x4c) & 0xff);
+                    if (R32(pool) == 0x98b6cc && R32(pool + 0x3c)) {
+                        uint32_t head = R32(pool + 0x38), node = R32(head);
+                        for (int k = 0; k < 4 && node != head; k++, node = R32(node)) {
+                            uint32_t job = R32(node + 8);
+                            fprintf(stderr, "[pool]   job %08x vt %08x state(+34) %u +38 %u +3c %08x +40 %u\n", job, R32(job), R32(job + 0x34), R32(job + 0x38), R32(job + 0x3c), R32(job + 0x40));
+                        }
+                    } }
+            const char *pk = getenv("RC_PEEK");   /* RC_PEEK=addr,addr,...: print these guest words every ~5 s */
+            for (; pk && *pk; pk = strchr(pk, ',') ? strchr(pk, ',') + 1 : NULL)
+                fprintf(stderr, "[peek] %08lx = %08x\n", strtoul(pk, NULL, 16), R32((uint32_t)strtoul(pk, NULL, 16)));
+        }
         guest_stdcall(c, tm.callback, 5, a);
         pthread_mutex_lock(&g_timer_lock);
     }
@@ -228,9 +258,9 @@ static const ImportHandler mm_list[] = {
 const ImportTable winmm_imports = { mm_list, sizeof mm_list / sizeof mm_list[0] };
 
 /* ================================================================== DirectX entry points
- * Direct3D 8 lives in d3d8.c.
+ * Direct3D 9 lives in d3d9.c.
  */
-void w_Direct3DCreate8(CPU *c);  /* d3d8.c */
+void w_Direct3DCreate9(CPU *c);  /* d3d9.c */
 W(DirectDrawCreate) {
     LOG("[ddraw] DirectDrawCreate -> fails (game should fall back)\n");
     RET(3, 0x80004005u /* E_FAIL */);
@@ -248,7 +278,7 @@ static const ImportHandler dx_list[] = {
     { "D3D8.DLL!DebugSetMute", w_DebugSetMute },
     { "D3D8.DLL!ValidateVertexShader", w_ValidateVertexShader },
     { "D3D8.DLL!ValidatePixelShader", w_ValidatePixelShader },
-    { "D3D8.DLL!Direct3DCreate8", w_Direct3DCreate8 },
+    { "D3D9.DLL!Direct3DCreate9", w_Direct3DCreate9 },
     { "DDRAW.DLL!DirectDrawCreate", w_DirectDrawCreate },
     { "DINPUT.DLL!DirectInputCreateA", w_DirectInputCreateA },
     { "DSOUND.DLL!#1", w_DirectSoundCreate },

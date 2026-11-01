@@ -49,6 +49,30 @@ static void *watchdog(void *arg) {
     return NULL;
 }
 
+/* RC_POLL_ADDR=addr: watch one guest word from a host thread and, when it changes, print every thread's guest stack */
+static void *poller(void *arg) {
+    uint32_t addr = (uint32_t)(uintptr_t)arg, last = R32(addr);
+    for (;;) {
+        usleep(200);
+        uint32_t v = R32(addr);
+        if (v == last) continue;
+        fprintf(stderr, "[poll] %08x: %08x -> %08x\n", addr, last, v);
+        last = v;
+        extern GuestThread *g_all_threads[64];
+        extern int g_nthreads;
+        for (int t = -1; t < g_nthreads && t < 64; t++) {
+            CPU *c = t < 0 ? &g_cpu : &g_all_threads[t]->cpu;
+            fprintf(stderr, "[poll] %s %x stack:", t < 0 ? "game thread" : "thread", t < 0 ? 0x100 : g_all_threads[t]->id);
+            for (int k = 0, n = 0; k < 2048 && n < 14; k++) {
+                uint32_t w = R32(c->esp + 4 * k);
+                if (w >= g_image_lo && w < g_image_hi) { fprintf(stderr, " %08x", w); n++; }
+            }
+            fprintf(stderr, "\n");
+        }
+    }
+    return NULL;
+}
+
 static void *game_main(void *arg) {
     (void)arg;
     CPU *c = &g_cpu;
@@ -80,14 +104,24 @@ int main(int argc, char **argv) {
     if (getenv("RC_USERDATA")) snprintf(g_user_root, sizeof g_user_root, "%s", getenv("RC_USERDATA"));
     else snprintf(g_user_root, sizeof g_user_root, "%s/../userdata", g_game_root);
     mkdir(g_user_root, 0755);
+    {   /* the game looks for its install folder by name (FindFirstFileA "c:/ubisoft/pop3"); mirror it in userdata */
+        char d[1100]; snprintf(d, sizeof d, "%s", g_user_root);
+        for (const char *p = GUEST_ROOT + 2; *p; ) {
+            size_t l = strlen(d); d[l++] = '/';
+            while (*p == '\\') p++;
+            while (*p && *p != '\\') d[l++] = *p++;
+            d[l] = 0; mkdir(d, 0755);
+        }
+    }
     g_log = getenv("RC_LOG") != NULL;
     extern int g_log_d3d;
     g_log_d3d = getenv("RC_LOG_D3D") ? atoi(getenv("RC_LOG_D3D")) : 0;
 
+    extern const ImportTable *pop3_imports(void);
     static ImportHandler all[1024];
     uint32_t n = 0;
     const ImportTable *tables[] = { &kernel32_imports, &user32_imports, &gdi32_imports, &advapi32_imports,
-                                    &winmm_imports, &directx_imports };
+                                    &winmm_imports, &directx_imports, pop3_imports() };
     for (size_t t = 0; t < sizeof tables / sizeof tables[0]; t++)
         for (uint32_t i = 0; i < tables[t]->count; i++) all[n++] = tables[t]->list[i];
     set_import_handlers(all, n);
@@ -120,6 +154,7 @@ int main(int argc, char **argv) {
     pthread_attr_setstacksize(&at, 256u << 20);
     pthread_t th;
     pthread_create(&th, &at, game_main, NULL);
+    if (getenv("RC_POLL_ADDR")) { pthread_t pt; pthread_create(&pt, NULL, poller, (void *)(uintptr_t)strtoul(getenv("RC_POLL_ADDR"), NULL, 16)); }
     if (getenv("RC_WATCHDOG")) {
         pthread_t wd;
         pthread_create(&wd, NULL, watchdog, (void *)(intptr_t)atoi(getenv("RC_WATCHDOG")));

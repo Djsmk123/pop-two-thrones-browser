@@ -1,5 +1,5 @@
 /* Converts Direct3D 8 texture data to RGBA8 for upload. */
-#include "d3d8.h"
+#include "d3d9.h"
 
 static void rgb565(uint16_t v, uint8_t *o) {
     o[0] = (uint8_t)(((v >> 11) & 31) * 255 / 31);
@@ -81,6 +81,7 @@ int texture_to_rgba8(uint32_t fmt, const uint8_t *src, uint32_t pitch, uint32_t 
             case FMT_A8: o[0] = o[1] = o[2] = 255; o[3] = s[x]; break;
             case FMT_L8: o[0] = o[1] = o[2] = s[x]; o[3] = 255; break;
             case FMT_A8L8: o[0] = o[1] = o[2] = s[2 * x]; o[3] = s[2 * x + 1]; break;
+            case FMT_V8U8: o[0] = (uint8_t)(s[2 * x] + 128); o[1] = (uint8_t)(s[2 * x + 1] + 128); o[2] = 255; o[3] = 255; break;   /* signed U, V (bump map): shifted to 0..255 */
             case FMT_P8:
                 if (palette) memcpy(o, palette + 4 * s[x], 4);
                 else { o[0] = o[1] = o[2] = s[x]; o[3] = 255; }

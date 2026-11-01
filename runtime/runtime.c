@@ -2,6 +2,9 @@
 #include "runtime.h"
 
 #include <math.h>
+#include <pthread.h>
+#include <string.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdlib.h>
@@ -43,7 +46,31 @@ __thread uint32_t g_import_target;  /* which host slot the current import call c
 
 static uint32_t g_trace_call = 1;   /* RC_TRACE_CALL=addr: log indirect calls to that function */
 
+/* RC_STALL_DUMP=1: every 5 s print, per guest thread, the last host import it called and how many it has made */
+typedef struct { uint32_t last, n, a0, a1, ret; } ThreadTrace;
+static __thread ThreadTrace t_trace;
+static ThreadTrace *g_traces[64];
+static int g_ntraces, g_stall_dump = -1;
+static void *stall_watcher(void *arg) {
+    (void)arg;
+    uint32_t prev[64] = { 0 };
+    for (;;) {
+        sleep(5);
+        fprintf(stderr, "[stall] ---\n");
+        for (int i = 0; i < g_ntraces; i++) {
+            const char *nm = import_name(g_traces[i]->last);
+            fprintf(stderr, "[stall] thread %d: last import %s(%08x, %08x) from %08x, %u calls (+%u)\n", i, nm ? nm : "?", g_traces[i]->a0, g_traces[i]->a1, g_traces[i]->ret, g_traces[i]->n, g_traces[i]->n - prev[i]);
+            prev[i] = g_traces[i]->n;
+        }
+    }
+    return NULL;
+}
+
 void call_indirect(CPU *c, uint32_t target) {
+    if (g_stall_dump < 0) {
+        g_stall_dump = getenv("RC_STALL_DUMP") != NULL;
+        if (g_stall_dump) { pthread_t th; pthread_create(&th, NULL, stall_watcher, NULL); }
+    }
     if (g_trace_call == 1) g_trace_call = getenv("RC_TRACE_CALL") ? (uint32_t)strtoul(getenv("RC_TRACE_CALL"), NULL, 16) : 0;
     uint32_t traced_this = 0;
     if (g_trace_call && target == g_trace_call) {
@@ -53,6 +80,11 @@ void call_indirect(CPU *c, uint32_t target) {
                     R32(c->esp + 4), R32(c->esp + 8), R32(c->esp + 12), R32(c->esp + 16));
             traced_this = c->ecx;
         }
+    }
+    {   /* RC_TRACE_RET=addr: log indirect calls whose return address is addr (a call site) */
+        static uint32_t want = 1;
+        if (want == 1) want = getenv("RC_TRACE_RET") ? (uint32_t)strtoul(getenv("RC_TRACE_RET"), NULL, 16) : 0;
+        if (want && R32(c->esp) == want) fprintf(stderr, "[callsite] %08x -> %08x (ecx=%08x arg0=%08x arg1=%08x)\n", want, target, c->ecx, R32(c->esp + 4), R32(c->esp + 8));
     }
     GuestFn fn = lookup_function(target);
     if (traced_this && fn) {
@@ -76,9 +108,16 @@ void call_indirect(CPU *c, uint32_t target) {
         const char *name = import_name(target);
         if (g_log_imports < 0) g_log_imports = getenv("RC_LOG_IMPORTS") != NULL;
         if (g_log_imports && name)
-            fprintf(stderr, "[import] %-40s from %08x  args %08x %08x %08x %08x\n", name, R32(c->esp),
+            fprintf(stderr, "[import] t%04x %-40s from %08x  args %08x %08x %08x %08x\n", (unsigned)(((unsigned long)pthread_self() >> 12) & 0xffff), name, R32(c->esp),
                     R32(c->esp + 4), R32(c->esp + 8), R32(c->esp + 12), R32(c->esp + 16));
         g_import_target = target;
+        if (g_stall_dump) {
+            if (!t_trace.n && g_ntraces < 64) g_traces[g_ntraces++] = &t_trace;
+            t_trace.last = target; t_trace.n++; t_trace.a0 = R32(c->esp + 4); t_trace.a1 = R32(c->esp + 8); t_trace.ret = R32(c->esp);
+        }
+        { static int slow = -1; if (slow < 0) slow = getenv("RC_SLOW_IMPORTS") ? atoi(getenv("RC_SLOW_IMPORTS")) : 0;
+          static const char *match; static int mi; if (!mi) { mi = 1; match = getenv("RC_SLOW_MATCH"); }
+          if (slow && (!match || strstr(import_name(target) ? import_name(target) : "", match))) usleep((useconds_t)slow); }
         if (fn == unimplemented_import) {
             static char msg[160];
             snprintf(msg, sizeof msg, "unimplemented Windows import %s (called from %08x)",
@@ -92,10 +131,12 @@ void call_indirect(CPU *c, uint32_t target) {
 void jump_indirect(CPU *c, uint32_t target, uint32_t from) {
     /* An indirect jump that isn't a known switch case: treat as a tail call. */
     GuestFn fn = lookup_function(target);
+    if (getenv("RC_LOG_JUMPS")) fprintf(stderr, "[jump] %08x -> %08x\n", from, target);
     if (!fn) {
         fprintf(stderr, "indirect jump from %08x\n", from);
         guest_trap(c, target, "indirect jump to unknown target");
     }
+    if (target >= IMPORT_BASE) g_import_target = target;   /* tail call into a host import / COM method */
     fn(c);
 }
 
@@ -124,6 +165,10 @@ void guest_trap(CPU *c, uint32_t addr, const char *why) {
         if (v >= 0x401000 && v < 0x900000) fprintf(stderr, " [%d]%08x", i, v);
     }
     fprintf(stderr, "\n");
+    if (getenv("RC_TRAP_PEEK")) {   /* RC_TRAP_PEEK=addr,addr,...: print these guest words */
+        for (const char *q = getenv("RC_TRAP_PEEK"); q && *q; q = strchr(q, ',') ? strchr(q, ',') + 1 : NULL)
+            fprintf(stderr, "    [%08lx] = %08x\n", strtoul(q, NULL, 16), R32((uint32_t)strtoul(q, NULL, 16)));
+    }
     uint32_t regs[2] = { c->eax, c->ecx };
     for (int r = 0; r < 2; r++) {
         if (regs[r] < GUEST_HEAP_BASE || regs[r] >= GUEST_HEAP_HI) continue;

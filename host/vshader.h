@@ -2,7 +2,7 @@
 #ifndef RC_VSHADER_H
 #define RC_VSHADER_H
 
-#include "d3d8.h"
+#include "d3d9.h"
 
 typedef struct {
     const uint8_t *data[16];   /* per stream: host pointer to vertex 0 */

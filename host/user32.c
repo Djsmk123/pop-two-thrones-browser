@@ -34,21 +34,37 @@ static uint32_t send_to_wndproc(CPU *c, uint32_t hwnd, uint32_t msg, uint32_t wp
 /* ------------------------------------------------------------------ message queue */
 
 typedef struct { uint32_t hwnd, msg, wp, lp; } Msg;
-static Msg g_queue[256];
-static int g_qhead, g_qtail;
+/* One queue per thread (threads that call PeekMessage/GetMessage or are targeted by PostThreadMessage).
+   Window messages go to the queue of the thread that created the window (the first thread to use one). */
+#define NQUEUES 16
+typedef struct { uint32_t tid; Msg q[256]; int head, tail; } MsgQueue;
+static MsgQueue g_queues[NQUEUES];
+static uint32_t g_window_tid;
 static pthread_mutex_t g_qlock = PTHREAD_MUTEX_INITIALIZER;
 
-void post_message(uint32_t hwnd, uint32_t msg, uint32_t wp, uint32_t lp) {
+static uint32_t cur_tid(void) { return t_self ? t_self->id : 0x100; }
+static MsgQueue *queue_for(uint32_t tid) {   /* g_qlock held */
+    for (int i = 0; i < NQUEUES; i++) if (g_queues[i].tid == tid) return &g_queues[i];
+    for (int i = 0; i < NQUEUES; i++) if (!g_queues[i].tid) { g_queues[i].tid = tid; return &g_queues[i]; }
+    return &g_queues[NQUEUES - 1];
+}
+static void post_to_thread(uint32_t tid, Msg m) {
     pthread_mutex_lock(&g_qlock);
-    int next = (g_qtail + 1) % 256;
-    if (next != g_qhead) { g_queue[g_qtail] = (Msg){ hwnd, msg, wp, lp }; g_qtail = next; }
+    MsgQueue *q = queue_for(tid);
+    int next = (q->tail + 1) % 256;
+    if (next != q->head) { q->q[q->tail] = m; q->tail = next; }
     pthread_mutex_unlock(&g_qlock);
+}
+
+void post_message(uint32_t hwnd, uint32_t msg, uint32_t wp, uint32_t lp) {
+    post_to_thread(g_window_tid ? g_window_tid : 0x100, (Msg){ hwnd, msg, wp, lp });
 }
 
 static int pop_message(Msg *m, int remove) {
     pthread_mutex_lock(&g_qlock);
-    int have = g_qhead != g_qtail;
-    if (have) { *m = g_queue[g_qhead]; if (remove) g_qhead = (g_qhead + 1) % 256; }
+    MsgQueue *q = queue_for(cur_tid());
+    int have = q->head != q->tail;
+    if (have) { *m = q->q[q->head]; if (remove) q->head = (q->head + 1) % 256; }
     pthread_mutex_unlock(&g_qlock);
     return have;
 }
@@ -113,9 +129,10 @@ W(CreateWindowExA) {
     LOG("[user32] CreateWindowExA(class %s, title %s, %dx%d)\n", ARG(1) > 0xffff ? GSTR(ARG(1)) : "#atom",
         ARG(2) ? GSTR(ARG(2)) : "", (int)ARG(6), (int)ARG(7));
     g_window_created = 1;
+    g_window_tid = cur_tid();
     /* Deliver the creation messages a real window would get. */
     uint32_t cs = heap_alloc(48, 1);  /* CREATESTRUCTA */
-    W32(cs + 28, ARG(6)); W32(cs + 24, ARG(7)); W32(cs + 36, ARG(2)); W32(cs + 40, ARG(1)); W32(cs + 44, ARG(0));
+    W32(cs, ARG(11)); W32(cs + 28, ARG(6)); W32(cs + 24, ARG(7)); W32(cs + 36, ARG(2)); W32(cs + 40, ARG(1)); W32(cs + 44, ARG(0));
     send_to_wndproc(c, MAIN_HWND, 0x81 /* WM_NCCREATE */, 0, cs);
     send_to_wndproc(c, MAIN_HWND, 0x01 /* WM_CREATE */, 0, cs);
     RET(12, MAIN_HWND);
@@ -133,9 +150,17 @@ W(UpdateWindow) { RET(1, 1); }
 W(MoveWindow) { RET(6, 1); }
 W(SetWindowPos) { RET(7, 1); }
 W(SetWindowTextA) { LOG("[user32] SetWindowTextA(%s)\n", GSTR(ARG(1))); RET(2, 1); }
+/* window longs (GWL_USERDATA etc.) of the one window; the game keeps its window object pointer there */
+static uint32_t g_wlong[128];
+static uint32_t *wlong_slot(int32_t idx) {
+    uint32_t i = idx < 0 ? (uint32_t)(-idx) : 64 + (uint32_t)idx / 4;
+    return &g_wlong[i & 127];
+}
 W(GetWindowLongA) {
     int32_t idx = (int32_t)ARG(1);
-    RET(2, idx == -16 /* GWL_STYLE */ ? 0x10CF0000u : idx == -4 /* GWL_WNDPROC */ ? g_wndproc : 0);
+    if (idx == -16 /* GWL_STYLE */ && !*wlong_slot(idx)) RET(2, 0x10CF0000u);
+    if (idx == -4 /* GWL_WNDPROC */) RET(2, g_wndproc);
+    RET(2, *wlong_slot(idx));
 }
 W(FindWindowA) { RET(2, 0); }  /* no other instance running */
 W(GetDesktopWindow) { RET(0, 0x00010001u); }
@@ -173,7 +198,8 @@ W(GetSystemMetrics) {
 W(SystemParametersInfoA) { RET(4, 1); }
 W(MessageBoxA) {
     fprintf(stderr, "[MessageBox] %s: %s\n", ARG(2) ? GSTR(ARG(2)) : "", ARG(1) ? GSTR(ARG(1)) : "");
-    RET(4, 1 /* IDOK */);
+    uint32_t kind = ARG(3) & 0xF;   /* MB_YESNO / MB_YESNOCANCEL: answer No (the game offers a safe-mode config after a crash) */
+    RET(4, kind == 4 || kind == 3 ? 7 /* IDNO */ : 1 /* IDOK */);
 }
 
 /* ------------------------------------------------------------------ cursor, icons */
@@ -212,6 +238,43 @@ W(SetWindowsHookExA) { g_hook_proc = ARG(1); LOG("[user32] SetWindowsHookExA(%d)
 W(UnhookWindowsHookEx) { RET(1, 1); }
 W(CallNextHookEx) { RET(4, 0); }
 
+/* ------------------------------------------------------------------ additions for Prince of Persia: The Two Thrones */
+W(PostThreadMessageA) { post_to_thread(ARG(0), (Msg){ 0, ARG(1), ARG(2), ARG(3) }); RET(4, 1); }
+W(RegisterWindowMessageA) {
+    uint32_t h = 5381; for (const char *s = GSTR(ARG(0)); *s; s++) h = h * 33 + (uint8_t)*s;
+    RET(1, 0xC000u + (h & 0x3FFF));
+}
+W(SetTimer) { STUB("SetTimer(%u, %u ms): never fires\n", ARG(1), ARG(2)); RET(4, ARG(1) ? ARG(1) : 1); }
+W(KillTimer) { RET(2, 1); }
+W(SetWindowLongA) {
+    int idx = (int)ARG(1);
+    if (idx == -4) { uint32_t old = g_wndproc; g_wndproc = ARG(2); RET(3, old); }
+    uint32_t *slot = wlong_slot(idx), old = *slot;
+    *slot = ARG(2);
+    RET(3, old);
+}
+/* wsprintfA is cdecl: (buffer, format, ...) */
+W(wsprintfA) {
+    char *out = (char *)HP(ARG(0)); const char *f = GSTR(ARG(1));
+    uint32_t ai = 2; size_t o = 0;
+    while (*f && o < 1000) {
+        if (*f != '%') { out[o++] = *f++; continue; }
+        char spec[32]; int k = 0; spec[k++] = *f++;
+        while (*f && strchr("-+ #0123456789.l", *f) && k < 28) { if (*f != 'l') spec[k++] = *f; f++; }
+        char t = *f ? *f++ : 0; spec[k++] = t; spec[k] = 0;
+        char tmp[512];
+        if (t == '%') { out[o++] = '%'; continue; }
+        uint32_t v = ARG(ai++);
+        if (t == 's') snprintf(tmp, sizeof tmp, spec, v ? GSTR(v) : "(null)");
+        else if (t == 'c') snprintf(tmp, sizeof tmp, spec, (int)v);
+        else if (t == 'd' || t == 'i') snprintf(tmp, sizeof tmp, spec, (int)v);
+        else snprintf(tmp, sizeof tmp, spec, v);
+        size_t l = strlen(tmp); memcpy(out + o, tmp, l); o += l;
+    }
+    out[o] = 0;
+    RET_CDECL(o);
+}
+
 #define U(name) IMPORT("USER32.DLL", name)
 static const ImportHandler list[] = {
     U(PeekMessageA), U(GetMessageA), U(TranslateMessage), U(DispatchMessageA), U(PostMessageA), U(SendMessageA),
@@ -224,6 +287,7 @@ static const ImportHandler list[] = {
     U(LoadCursorA), U(LoadIconA), U(LoadImageA), U(DestroyIcon), U(SetCursor), U(ShowCursor), U(GetCursorPos),
     U(SetCursorPos), U(GetAsyncKeyState), U(GetKeyState), U(GetKeyboardState), U(GetKeyboardLayout),
     U(MapVirtualKeyExA), U(ToAsciiEx), U(keybd_event), U(CharUpperA), U(SetWindowsHookExA),
-    U(UnhookWindowsHookEx), U(CallNextHookEx),
+    U(UnhookWindowsHookEx), U(CallNextHookEx), U(PostThreadMessageA), U(RegisterWindowMessageA), U(SetTimer),
+    U(KillTimer), U(SetWindowLongA), U(wsprintfA),
 };
 const ImportTable user32_imports = { list, sizeof list / sizeof list[0] };

@@ -1,4 +1,4 @@
-// Cricket 07 in the browser: copies the player's own game folder into OPFS (once; it never leaves the
+// Prince of Persia: The Two Thrones in the browser: copies the player's own game folder into OPFS (once; it never leaves the
 // computer), starts the recompiled build (build/recomp.js), replays its frames with WebGPU and feeds it
 // input and audio.
 //
@@ -290,7 +290,7 @@ async function run(session) {
     printErr: (t) => console.log(t),
     preRun: [(m) => {
       if (params.has('mute')) m.ENV.RC_NO_AUDIO = '1';
-      if (params.get('exe')) m.ENV.RC_EXE = params.get('exe');
+      m.ENV.RC_EXE = params.get('exe') || 'POP3.EXE';
       if (params.has('log')) m.ENV.RC_LOG = '1';
       if (params.has('pads')) m.ENV.RC_PADS = params.get('pads');
       if (params.has('queue')) m.ENV.RC_QUEUE = params.get('queue');
@@ -372,9 +372,9 @@ async function boot() {
     $('help').classList.remove('hidden');
   };
 
-  $('reset').onclick = (e) => { e.preventDefault(); show('loading'); showPicker('Choose your Cricket 07 folder.'); };
+  $('reset').onclick = (e) => { e.preventDefault(); show('loading'); showPicker('Choose your Two Thrones folder.'); };
   if (!(await readMarker())) {
-    showPicker('Choose your Cricket 07 folder to start.');
+    showPicker('Choose your Two Thrones folder to start.');
     return;
   }
   ready();

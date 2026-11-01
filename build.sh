@@ -44,7 +44,7 @@ echo "built build/$LIB"
 if [ "${TRACE:-0}" != 1 ]; then
     mkdir -p build/host
     for f in host/*.c; do
-        clang $OPT -Wall -Wno-unused-function -Wno-misleading-indentation -c -Iruntime -Ihost $PFLAG \
+        clang ${HOST_OPT:--O2} -Wall -Wno-unused-function -Wno-misleading-indentation -c -Iruntime -Ihost $PFLAG \
             -I"$WGPU/include" -I"$SDL2/include" "$f" -o "build/host/$(basename "$f" .c).o" || exit 1
     done
     clang -o build/recomp.tmp build/runtime.o build/interp.o build/host/*.o build/$OBJ/*.o -lm -framework AudioToolbox \

@@ -40,7 +40,7 @@ typedef struct { CmdHdr h; uint32_t color_id, color_w, color_h, depth_id, depth_
 typedef struct { CmdHdr h; uint32_t flags, color, stencil; float z; } CmdClear;
 
 /* texture slot kinds */
-enum { TS_NONE = 0, TS_TEX, TS_RTSURF };
+enum { TS_NONE = 0, TS_TEX, TS_RTSURF, TS_BACKBUF };   /* TS_BACKBUF: the back buffer itself (StretchRect from it) */
 
 typedef struct {
     CmdHdr h;

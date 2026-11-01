@@ -31,7 +31,7 @@ W(GetVersionExA) {
 
 #define FAKE_MODULE(i) (0xF1000000u + (i) * 0x10000u)
 static const char *g_known_dlls[] = { "kernel32.dll", "user32.dll", "gdi32.dll", "advapi32.dll", "winmm.dll",
-                                      "d3d8.dll", "ddraw.dll", "dinput.dll", "dsound.dll", "version.dll", NULL };
+                                      "d3d8.dll", "ddraw.dll", "dinput.dll", "dsound.dll", "version.dll", "d3d9.dll", NULL };
 
 static uint32_t module_for(const char *name) {
     if (!name) return g_image_lo;
@@ -415,7 +415,7 @@ W(TlsSetValue) { if (ARG(0) < 64) t_self->tls[ARG(0)] = ARG(1); RET(2, 1); }
 
 /* ------------------------------------------------------------------ critical sections and interlocked */
 
-typedef struct CS { uint32_t key; pthread_mutex_t m; struct CS *next; GuestThread *owner; int depth; } CS;
+typedef struct CS { uint32_t key; pthread_mutex_t m; struct CS *next; GuestThread *owner; int depth; int waiters, host_depth; } CS;
 static CS *g_cs[1024];
 static pthread_mutex_t g_cs_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -443,8 +443,19 @@ static pthread_mutex_t *cs_for(uint32_t key) { return &cs_get(key)->m; }
 static int cs_free(void *p) { return ((CS *)p)->owner == NULL; }
 W(InitializeCriticalSection) { memset(HP(ARG(0)), 0, 24); W32(ARG(0) + 4, 0xFFFFFFFFu); cs_for(ARG(0)); RET(1, 0); }
 W(DeleteCriticalSection) { RET(1, 0); }
+/* Host mutexes are not fair: a thread that leaves and re-enters a lock in a tight loop (the sound engine's
+   pump) can keep it from threads waiting for it indefinitely. A thread leaving a contended lock steps aside. */
 W(EnterCriticalSection) {
-    if (!sched_active()) { pthread_mutex_lock(cs_for(ARG(0))); RET(1, 0); }
+    if (!sched_active()) {
+        CS *x = cs_get(ARG(0));
+        if (pthread_mutex_trylock(&x->m)) {
+            __atomic_add_fetch(&x->waiters, 1, __ATOMIC_SEQ_CST);
+            pthread_mutex_lock(&x->m);
+            __atomic_sub_fetch(&x->waiters, 1, __ATOMIC_SEQ_CST);
+        }
+        x->host_depth++;
+        RET(1, 0);
+    }
     CS *x = cs_get(ARG(0));
     if (x->owner != t_self) sched_wait(cs_free, x, UINT64_MAX, NULL);
     x->owner = t_self;
@@ -452,7 +463,15 @@ W(EnterCriticalSection) {
     RET(1, 0);
 }
 W(LeaveCriticalSection) {
-    if (!sched_active()) { pthread_mutex_unlock(cs_for(ARG(0))); RET(1, 0); }
+    if (!sched_active()) {
+        CS *x = cs_get(ARG(0));
+        int last = --x->host_depth == 0;
+        pthread_mutex_unlock(&x->m);
+        if (last && __atomic_load_n(&x->waiters, __ATOMIC_SEQ_CST) > 0) {
+            for (int i = 0; i < 20 && __atomic_load_n(&x->waiters, __ATOMIC_SEQ_CST) > 0; i++) usleep(50);
+        }
+        RET(1, 0);
+    }
     CS *x = cs_get(ARG(0));
     if (x->owner == t_self && --x->depth == 0) x->owner = NULL;
     RET(1, 0);
@@ -472,6 +491,7 @@ typedef struct {
     int count, max;            /* semaphore */
     pthread_t owner; int owned, depth;  /* mutex */
     int waiters, handoff;               /* mutex: threads blocked on it; released to one of them */
+    pthread_t q[16]; int qn;            /* mutex: waiting threads in arrival order (a released mutex goes to the first) */
     int finished; uint32_t exit_code;   /* thread */
 } Sync;
 
@@ -482,6 +502,16 @@ static Sync *sync_new(void) {
     return s;
 }
 
+/* WaitForMultipleObjects blocks on one global condition that every signal broadcasts, so a waiting
+   thread wakes within microseconds like on Windows (a sleep-poll made the game's I/O workers slow enough
+   to expose a lost-wakeup race in the DARE job queue: a cancelled job at the front resets the event) */
+static pthread_mutex_t g_any_m = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_any_cv = PTHREAD_COND_INITIALIZER;
+static unsigned g_any_gen;
+static void any_signal(void) {
+    pthread_mutex_lock(&g_any_m); g_any_gen++; pthread_cond_broadcast(&g_any_cv); pthread_mutex_unlock(&g_any_m);
+}
+
 W(CreateEventA) {
     uint32_t h = handle_new(H_EVENT);
     Sync *s = sync_new();
@@ -490,19 +520,25 @@ W(CreateEventA) {
     handle_get(h, H_EVENT)->ptr = s;
     RET(4, h);
 }
+/* debugging: -1 unknown, else the event's signaled flag */
+int kernel_event_state(unsigned h) { WinHandle *x = handle_get(h, H_EVENT); return x ? ((Sync *)x->ptr)->signaled : -1; }
 /* Host-side SetEvent, used by DirectSound position notifications. */
 void kernel_set_event(uint32_t h) {
     WinHandle *x = handle_get(h, H_EVENT);
     if (!x) return;
     Sync *s = x->ptr;
     pthread_mutex_lock(&s->m); s->signaled = 1; pthread_cond_broadcast(&s->cv); pthread_mutex_unlock(&s->m);
+    any_signal();
 }
 
 W(SetEvent) {
+    if (getenv("RC_LOG_SYNC")) LOG("[sync] SetEvent %x t=%p\n", ARG(0), (void *)pthread_self());
     WinHandle *x = handle_get(ARG(0), H_EVENT);
     if (!x) RET(1, 0);
     Sync *s = x->ptr;
     pthread_mutex_lock(&s->m); s->signaled = 1; pthread_cond_broadcast(&s->cv); pthread_mutex_unlock(&s->m);
+    any_signal();
+    sched_yield();   /* let a waiting worker run first, as it would on another core */
     RET(1, 1);
 }
 W(ResetEvent) {
@@ -512,7 +548,10 @@ W(ResetEvent) {
     pthread_mutex_lock(&s->m); s->signaled = 0; pthread_mutex_unlock(&s->m);
     RET(1, 1);
 }
+/* Named mutexes: names listed in PROFILE_EXISTING_MUTEXES already exist, as if the game's launcher had created them */
 W(CreateMutexA) {
+    static const char *const existing[] = { PROFILE_EXISTING_MUTEXES NULL };
+    if (ARG(2)) for (int i = 0; existing[i]; i++) if (!strcmp(GSTR(ARG(2)), existing[i])) set_error(ERROR_ALREADY_EXISTS);
     uint32_t h = handle_new(H_MUTEX);
     Sync *s = sync_new();
     if (ARG(1)) { s->owned = 1; s->owner = pthread_self(); s->depth = 1; }
@@ -533,6 +572,10 @@ W(ReleaseMutex) {
         pthread_cond_broadcast(&s->cv);
     }
     pthread_mutex_unlock(&s->m);
+    any_signal();
+    /* the game's sound code locks and unlocks in a tight loop; without a yield here the threads it hands work to
+       (the audio timer, the loader) do not get to run, and loading never finishes (see RC_STALL_DUMP) */
+    sched_yield();
     RET(1, 1);
 }
 W(CreateSemaphoreA) {
@@ -544,6 +587,7 @@ W(CreateSemaphoreA) {
     RET(4, h);
 }
 W(ReleaseSemaphore) {
+    if (getenv("RC_LOG_SYNC")) LOG("[sync] ReleaseSemaphore %x t=%p\n", ARG(0), (void *)pthread_self());
     WinHandle *x = handle_get(ARG(0), H_SEMAPHORE);
     if (!x) RET(3, 0);
     Sync *s = x->ptr;
@@ -553,6 +597,7 @@ W(ReleaseSemaphore) {
     if (s->count > s->max) s->count = s->max;
     pthread_cond_broadcast(&s->cv);
     pthread_mutex_unlock(&s->m);
+    any_signal();
     RET(3, 1);
 }
 
@@ -563,7 +608,8 @@ static int try_acquire(WinHandle *x, int waited) {
     case H_EVENT: if (s->signaled) { if (!s->manual) s->signaled = 0; return 1; } return 0;
     case H_SEMAPHORE: if (s->count > 0) { s->count--; return 1; } return 0;
     case H_MUTEX:
-        if (!s->owned && (!s->handoff || waited)) {
+        if (!s->owned && (s->qn == 0 || pthread_equal(s->q[0], pthread_self()))) {
+            if (s->qn) { memmove(&s->q[0], &s->q[1], sizeof(pthread_t) * (size_t)--s->qn); }   /* it was first in line */
             s->owned = 1; s->owner = pthread_self(); s->depth = 1; s->handoff = 0;
             return 1;
         }
@@ -615,13 +661,17 @@ static uint32_t wait_one(uint32_t h, uint32_t ms) {
     int waited = 0;
     while (!try_acquire(x, waited)) {
         if (ms == 0) { r = 0x102; break; }
-        if (!waited) { waited = 1; s->waiters++; }
+        if (!waited) { waited = 1; s->waiters++; if (x->type == H_MUTEX && s->qn < 16) s->q[s->qn++] = pthread_self(); }
         int e = ms == 0xFFFFFFFFu ? pthread_cond_wait(&s->cv, &s->m) : pthread_cond_timedwait(&s->cv, &s->m, &dl);
         if (e == ETIMEDOUT && !try_acquire(x, waited)) { r = 0x102 /* WAIT_TIMEOUT */; break; }
         if (e == ETIMEDOUT) break;
     }
     if (waited) {
         s->waiters--;
+        if (x->type == H_MUTEX && r)   /* gave up (timeout): leave the line */
+            for (int i = 0; i < s->qn; i++) if (pthread_equal(s->q[i], pthread_self())) {
+                memmove(&s->q[i], &s->q[i + 1], sizeof(pthread_t) * (size_t)(s->qn - i - 1)); s->qn--; break;
+            }
         if (r && s->handoff && !s->waiters) { s->handoff = 0; pthread_cond_broadcast(&s->cv); }  /* nobody left to take it */
     }
     pthread_mutex_unlock(&s->m);
@@ -670,9 +720,11 @@ typedef struct { GuestThread *t; uint32_t start, param; Sync *sync; int suspende
                  pthread_cond_t go_cv; void *sched; } ThreadStart;
 static int thread_resumed(void *p) { return !((ThreadStart *)p)->suspended; }
 
+static __thread Sync *t_exit_sync;   /* the running guest thread's handle state, for ExitThread */
 static void *thread_main(void *arg) {
     ThreadStart *ts = arg;
     t_self = ts->t;
+    t_exit_sync = ts->sync;
     CPU *c = &ts->t->cpu;
     fpu_sync_rounding(c);
     sched_enter(ts->sched);   /* deterministic mode: runs once resumed and scheduled */
@@ -759,6 +811,13 @@ W(ResumeThread) {
 }
 W(ExitThread) {
     LOG("[kernel32] ExitThread(%u)\n", ARG(0));
+    if (t_exit_sync) {   /* mark the thread finished so that a join (WaitForSingleObject on its handle) returns */
+        pthread_mutex_lock(&t_exit_sync->m);
+        t_exit_sync->finished = 1;
+        t_exit_sync->exit_code = ARG(0);
+        pthread_cond_broadcast(&t_exit_sync->cv);
+        pthread_mutex_unlock(&t_exit_sync->m);
+    }
     sched_exit();
     pthread_exit(NULL);
 }
@@ -826,12 +885,16 @@ W(CreateFileW) {
 
 W(ReadFile) {
     WinHandle *x = handle_get(ARG(0), H_FILE);
-    if (!x) { set_error(ERROR_INVALID_HANDLE); RET(5, 0); }
+    if (!x) { LOG("[file] ReadFile on invalid handle %x (want %u)\n", ARG(0), ARG(2)); set_error(ERROR_INVALID_HANDLE); RET(5, 0); }
     /* Windows only returns short reads at end of file; host reads can stop early, so loop */
     uint32_t want = ARG(2), got = 0;
     ssize_t n = 0;
     while (got < want && (n = read(x->fd, HP(ARG(1) + got), want - got)) > 0) got += (uint32_t)n;
     if (ARG(3)) W32(ARG(3), got);
+    static unsigned reads;
+    if (g_log && (reads < 40 || getenv("RC_LOG_READS") || reads % 2000 == 0))
+        LOG("[file] ReadFile #%u(%s: want %u, got %u, overlapped %08x, pos %lld)\n", reads, x->path, want, got, ARG(4), (long long)lseek(x->fd, 0, SEEK_CUR));
+    reads++;
     RET(5, n >= 0);
 }
 W(WriteFile) {
@@ -858,9 +921,10 @@ W(SetFilePointer) {
 }
 W(GetFileSize) {
     WinHandle *x = handle_get(ARG(0), H_FILE);
-    if (!x) RET(2, 0xFFFFFFFFu);
+    if (!x) { if (getenv("RC_LOG_SYNC")) LOG("[file] GetFileSize(%x) invalid handle\n", ARG(0)); RET(2, 0xFFFFFFFFu); }
     struct stat st;
     fstat(x->fd, &st);
+    if (getenv("RC_LOG_SYNC")) LOG("[file] GetFileSize(%x %s) = %lld\n", ARG(0), x->path, (long long)st.st_size);
     if (ARG(1)) W32(ARG(1), (uint32_t)((uint64_t)st.st_size >> 32));
     RET(2, (uint32_t)st.st_size);
 }
@@ -1048,6 +1112,114 @@ W(ReadConsoleInputA) { RET(4, 0); }
 W(PeekConsoleInputA) { if (ARG(3)) W32(ARG(3), 0); RET(4, 1); }
 W(GetNumberOfConsoleInputEvents) { if (ARG(1)) W32(ARG(1), 0); RET(2, 1); }
 
+/* ------------------------------------------------------------------ additions for Prince of Persia: The Two Thrones */
+
+W(GetLocalTime) {
+    time_t t = time(NULL); struct tm tm; localtime_r(&t, &tm);
+    uint32_t p = ARG(0);
+    uint16_t v[8] = { tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_wday, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, 0 };
+    for (int i = 0; i < 8; i++) W16(p + 2 * i, v[i]);
+    RET(1, 0);
+}
+W(GlobalMemoryStatus) {
+    uint32_t p = ARG(0);
+    W32(p, 32); W32(p + 4, 30); W32(p + 8, 0x80000000u); W32(p + 12, 0x60000000u);
+    W32(p + 16, 0x80000000u); W32(p + 20, 0x60000000u); W32(p + 24, 0x7FFE0000u); W32(p + 28, 0x60000000u);
+    RET(1, 0);
+}
+W(ExpandEnvironmentStringsA) {
+    const char *s = GSTR(ARG(0)); uint32_t n = ARG(2);
+    if (ARG(1) && n) snprintf((char *)HP(ARG(1)), n, "%s", s);
+    RET(3, strlen(s) + 1);
+}
+W(lstrcmpiA) { RET(2, (int)strcasecmp(GSTR(ARG(0)), GSTR(ARG(1)))); }
+W(InterlockedCompareExchange) {
+    guest_lock(); uint32_t v = R32(ARG(0)); if (v == ARG(2)) W32(ARG(0), ARG(1)); guest_unlock(); RET(3, v);
+}
+W(SetPriorityClass) { RET(2, 1); }
+W(GetPriorityClass) { RET(1, 0x20); }
+W(CreateToolhelp32Snapshot) { RET(2, 0xFFFFFFFFu); }
+W(Module32First) { RET(2, 0); }
+W(Module32Next) { RET(2, 0); }
+W(SetFileAttributesA) { RET(2, 1); }
+W(GetFileAttributesA) {
+    char host[1024]; struct stat st;
+    map_path(GSTR(ARG(0)), host, sizeof host);
+    if (stat(host, &st)) { set_error(ERROR_FILE_NOT_FOUND); RET(1, 0xFFFFFFFFu); }
+    RET(1, S_ISDIR(st.st_mode) ? 0x10 : 0x80);
+}
+W(WaitForMultipleObjects) {
+    uint32_t n = ARG(0), hs = ARG(1), all = ARG(2), ms = ARG(3);
+    if (getenv("RC_LOG_SYNC")) LOG("[sync] WFMO t=%p from %08x h0=%x h1=%x\n", (void *)pthread_self(), R32(c->esp), R32(hs), n > 1 ? R32(hs + 4) : 0);
+    if (all) {
+        for (uint32_t i = 0; i < n; i++) { uint32_t r = wait_one(R32(hs + 4 * i), ms); if (r) RET(4, r); }
+        RET(4, 0);
+    }
+    double end = host_seconds() + (ms == 0xFFFFFFFFu ? 1e9 : ms / 1000.0);
+    for (;;) {
+        pthread_mutex_lock(&g_any_m); unsigned gen = g_any_gen; pthread_mutex_unlock(&g_any_m);
+        for (uint32_t i = 0; i < n; i++) if (!wait_one(R32(hs + 4 * i), 0)) RET(4, i);
+        double now = host_seconds();
+        if (now >= end) RET(4, 0x102);
+        if (sched_active()) { usleep(1000); continue; }
+        struct timespec dl;
+        clock_gettime(CLOCK_REALTIME, &dl);
+        dl.tv_nsec += 5000000L;   /* re-check every 5 ms in case a signal source does not broadcast */
+        if (dl.tv_nsec >= 1000000000L) { dl.tv_sec++; dl.tv_nsec -= 1000000000L; }
+        pthread_mutex_lock(&g_any_m);
+        if (g_any_gen == gen) pthread_cond_timedwait(&g_any_cv, &g_any_m, &dl);
+        pthread_mutex_unlock(&g_any_m);
+    }
+}
+
+/* INI files: the game keeps its settings in .ini files next to the exe */
+static int ini_lookup(const char *file, const char *sect, const char *key, char *out, size_t n) {
+    char host[1024], line[1024];
+    map_path(file, host, sizeof host);
+    FILE *f = fopen(host, "r");
+    if (!f) {   /* a file the game's launcher normally makes: PROFILE_BUILTIN_INIS = { "name", "contents" }, ... */
+        static const char *const builtin[][2] = { PROFILE_BUILTIN_INIS { NULL, NULL } };
+        const char *base = strrchr(file, '\\');
+        base = base ? base + 1 : file;
+        for (int i = 0; builtin[i][0]; i++)
+            if (!strcasecmp(base, builtin[i][0])) { f = fmemopen((void *)builtin[i][1], strlen(builtin[i][1]), "r"); break; }
+        if (!f) return 0;
+    }
+    int in = !sect, found = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *p = line; while (*p == ' ' || *p == '\t') p++;
+        p[strcspn(p, "\r\n")] = 0;
+        if (*p == '[') {
+            char *e = strchr(p, ']'); if (e) *e = 0;
+            in = sect && !strcasecmp(p + 1, sect);
+        } else if (in && *p != ';') {
+            char *eq = strchr(p, '='); if (!eq) continue;
+            *eq = 0;
+            char *ke = eq; while (ke > p && (ke[-1] == ' ' || ke[-1] == '\t')) *--ke = 0;
+            if (strcasecmp(p, key)) continue;
+            char *v = eq + 1; while (*v == ' ' || *v == '\t') v++;
+            snprintf(out, n, "%s", v); found = 1; break;
+        }
+    }
+    fclose(f);
+    return found;
+}
+W(GetPrivateProfileStringA) {
+    char v[1024];
+    const char *def = ARG(2) ? GSTR(ARG(2)) : "";
+    if (!ARG(1) || !ini_lookup(GSTR(ARG(5)), ARG(0) ? GSTR(ARG(0)) : NULL, GSTR(ARG(1)), v, sizeof v))
+        snprintf(v, sizeof v, "%s", def);
+    uint32_t n = ARG(4);
+    if (getenv("RC_LOG_INI")) fprintf(stderr, "[ini] %s [%s] %s = '%s' (default '%s')\n", GSTR(ARG(5)), ARG(0) ? GSTR(ARG(0)) : "-", ARG(1) ? GSTR(ARG(1)) : "-", v, def);
+    if (n) snprintf((char *)HP(ARG(3)), n, "%s", v);
+    RET(6, n ? (strlen(v) < n ? strlen(v) : n - 1) : 0);
+}
+W(GetPrivateProfileIntA) {
+    char v[64];
+    RET(4, ini_lookup(GSTR(ARG(3)), GSTR(ARG(0)), GSTR(ARG(1)), v, sizeof v) ? (uint32_t)strtol(v, NULL, 0) : ARG(2));
+}
+W(WritePrivateProfileStringA) { STUB("WritePrivateProfileStringA\n"); RET(4, 1); }
+
 #define K(name) IMPORT("KERNEL32.DLL", name)
 static const ImportHandler list[] = {
     K(GetVersionExA), K(GetModuleHandleA), K(LoadLibraryA), K(FreeLibrary), K(GetProcAddress),
@@ -1079,6 +1251,9 @@ static const ImportHandler list[] = {
     K(GetVolumeInformationA), K(CreateFileMappingA), K(MapViewOfFile), K(UnmapViewOfFile), K(FindResourceA),
     K(FindResourceW), K(LoadResource), K(LockResource), K(SizeofResource), K(GetConsoleMode), K(SetConsoleMode),
     K(SetConsoleCtrlHandler), K(WriteConsoleA), K(ReadConsoleInputA), K(PeekConsoleInputA),
-    K(GetNumberOfConsoleInputEvents),
+    K(GetNumberOfConsoleInputEvents), K(GetLocalTime), K(GlobalMemoryStatus), K(ExpandEnvironmentStringsA),
+    K(lstrcmpiA), K(InterlockedCompareExchange), K(SetPriorityClass), K(GetPriorityClass),
+    K(CreateToolhelp32Snapshot), K(Module32First), K(Module32Next), K(SetFileAttributesA), K(GetFileAttributesA),
+    K(WaitForMultipleObjects), K(GetPrivateProfileStringA), K(GetPrivateProfileIntA), K(WritePrivateProfileStringA),
 };
 const ImportTable kernel32_imports = { list, sizeof list / sizeof list[0] };

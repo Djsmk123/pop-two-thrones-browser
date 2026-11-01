@@ -1,5 +1,11 @@
 /* Host services shared by the Windows API layer: guest heap, handles, path mapping, time. */
 #include "win32.h"
+#ifndef __EMSCRIPTEN__
+#include <execinfo.h>
+#else
+static int backtrace(void **b, int n) { (void)b; (void)n; return 0; }
+static void backtrace_symbols_fd(void *const *b, int n, int fd) { (void)b; (void)n; (void)fd; }
+#endif
 
 #include <ctype.h>
 #include <dirent.h>
@@ -55,12 +61,25 @@ uint32_t heap_alloc(uint32_t size, int zero) {
     }
     W32(a - 12, HEAP_MAGIC);
     pthread_mutex_unlock(&g_heap_lock);
+    {   /* RC_HEAP_WATCH=addr: report an allocation that covers that address */
+        static uint32_t watch = 1;
+        if (watch == 1) watch = getenv("RC_HEAP_WATCH") ? (uint32_t)strtoul(getenv("RC_HEAP_WATCH"), NULL, 16) : 0;
+        if (watch && watch >= a && watch < a + R32(a - 16)) {
+            void *bt[24]; int n = backtrace(bt, 24);
+            fprintf(stderr, "[heap] alloc %08x (+%u) covers watched %08x\n", a, R32(a - 16), watch); backtrace_symbols_fd(bt, n, 2);
+        }
+    }
     if (zero) memset(HP(a), 0, R32(a - 16));
     return a;
 }
 
 void heap_free(uint32_t a) {
     if (!a) return;
+    {   /* RC_HEAP_WATCH=addr: report who frees that block (host backtrace names the recompiled functions) */
+        static uint32_t watch = 1;
+        if (watch == 1) watch = getenv("RC_HEAP_WATCH") ? (uint32_t)strtoul(getenv("RC_HEAP_WATCH"), NULL, 16) : 0;
+        if (watch && a == watch) { void *bt[24]; int n = backtrace(bt, 24); fprintf(stderr, "[heap] free of watched block %08x\n", a); backtrace_symbols_fd(bt, n, 2); }
+    }
     if (a < HEAP_LO || a >= HEAP_HI || R32(a - 12) != HEAP_MAGIC) {
         LOG("[heap] free of non-heap pointer %08x ignored\n", a);
         return;
@@ -202,7 +221,7 @@ int map_path(const char *guest, char *host, size_t n) {
     char out[1024];
     snprintf(out, sizeof out, "%s", base);
     int exists = 1;
-    char comp[512];
+    char comp[512], prev[512] = "";
     while (*rest) {
         while (*rest == '\\') rest++;
         if (!*rest) break;
@@ -210,6 +229,14 @@ int map_path(const char *guest, char *host, size_t n) {
         while (rest[k] && rest[k] != '\\') k++;
         snprintf(comp, sizeof comp, "%.*s", (int)k, rest);
         rest += k;
+        {   /* Menu\<LANGUAGE>\...: the game picks its language from its own settings (this copy is a Spanish edition); RC_LANGUAGE
+               (default ENGLISH) chooses which of the installed language folders the menus and text come from */
+            static const char *const langs[] = { "SPANISH", "FRENCH", "ENGLISH", "GERMAN", "ITALIAN", NULL };
+            if (!strcasecmp(prev, "Menu"))
+                for (int i = 0; langs[i]; i++)
+                    if (!strcasecmp(comp, langs[i])) { snprintf(comp, sizeof comp, "%s", getenv("RC_LANGUAGE") ? getenv("RC_LANGUAGE") : "ENGLISH"); break; }
+            snprintf(prev, sizeof prev, "%s", comp);
+        }
         if (!strcmp(comp, ".")) continue;
         if (!strcmp(comp, "..")) {
             char *sl = strrchr(out, '/');

@@ -485,3 +485,10 @@ void w_DirectInputCreateA(CPU *c) {
     W32(ARG(2), com_new(&IDirectInput_i, 0, NULL));
     RET(4, S_OK);
 }
+
+/* DirectInput 8: IDirectInput8A starts with the same methods as IDirectInput7A, and so do its devices */
+void w_DirectInput8Create(CPU *c) {   /* (hinst, version, riid, ppv, outer) */
+    LOG("[dinput] DirectInput8Create(version %x)\n", ARG(1));
+    W32(ARG(3), com_new(&IDirectInput_i, 0, NULL));
+    RET(5, S_OK);
+}

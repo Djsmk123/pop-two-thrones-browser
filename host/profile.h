@@ -15,4 +15,10 @@
  * e.g. { "SOFTWARE\\Vendor\\Game", "InstallDir", 1, PROFILE_GUEST_ROOT, 0 }, */
 #define PROFILE_REGISTRY
 
+/* Named mutexes that already exist when the game starts (as if a launcher had made them): "name", */
+#define PROFILE_EXISTING_MUTEXES
+
+/* INI files the game expects its launcher to have written: { "name", "contents" }, */
+#define PROFILE_BUILTIN_INIS
+
 #endif

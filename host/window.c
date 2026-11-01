@@ -113,6 +113,15 @@ static void pad_removed(SDL_JoystickID id) {
     pad_report(i);
 }
 
+/* A binary started from a terminal is not a proper app: make it a regular, active one so that the window gets the keyboard
+   (otherwise the keys keep going to the terminal and the game seems to ignore them). */
+static void activate_app(void) {
+    id app = ((id (*)(Class, SEL))objc_msgSend)(objc_getClass("NSApplication"), sel_registerName("sharedApplication"));
+    ((void (*)(id, SEL, long))objc_msgSend)(app, sel_registerName("setActivationPolicy:"), 0 /* regular */);
+    ((void (*)(id, SEL, signed char))objc_msgSend)(app, sel_registerName("activateIgnoringOtherApps:"), 1);
+    if (g_window) { SDL_RaiseWindow(g_window); SDL_SetWindowInputFocus(g_window); }
+}
+
 int window_create(const char *title) {
     SDL_SetHint(SDL_HINT_MAC_CTRL_CLICK_EMULATE_RIGHT_CLICK, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
@@ -128,7 +137,8 @@ int window_create(const char *title) {
                                 SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
                                 (getenv("RC_FULLSCREEN") ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0));
     if (!g_window) { fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError()); return 0; }
-    SDL_RaiseWindow(g_window);
+    SDL_SetHint(SDL_HINT_FORCE_RAISEWINDOW, "1");
+    activate_app();
     disable_app_nap();
     SDL_MetalView view = SDL_Metal_CreateView(g_window);
     g_metal_layer = SDL_Metal_GetLayer(view);
@@ -143,8 +153,21 @@ int window_create(const char *title) {
 /* Runs forever on the main thread. */
 void window_event_loop(void) {
     int scripted = getenv("RC_INPUT") != NULL;   /* scripted runs ignore the real mouse and keyboard */
+    unsigned pushed = 0;
+    int pushed_activate = 0;
+    uint32_t t0 = SDL_GetTicks(), last_activate = t0;
+    activate_app();
     for (;;) {
         SDL_Event e;
+        if (SDL_GetTicks() - last_activate < 4000u && SDL_GetTicks() - last_activate > 1000u && !pushed_activate) { pushed_activate = 1; activate_app(); }   /* once more after launch has settled */
+        if (getenv("RC_SDL_PUSH") && SDL_GetTicks() - t0 > 10000u * (pushed / 2 + 1) / 2 + 6000u * (pushed / 2) && pushed < 8) {   /* debugging: synthetic Enter presses through the real event path */
+            SDL_Event k = { 0 };
+            k.type = (pushed & 1) ? SDL_KEYUP : SDL_KEYDOWN;
+            k.key.keysym.scancode = SDL_SCANCODE_RETURN;
+            SDL_PushEvent(&k);
+            pushed++;
+            if (!(pushed & 1)) t0 = SDL_GetTicks();
+        }
         if (!SDL_WaitEventTimeout(&e, 10)) continue;
         if (scripted && (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP || e.type == SDL_MOUSEMOTION ||
                          e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP))
@@ -153,7 +176,8 @@ void window_event_loop(void) {
         case SDL_QUIT:
             fprintf(stderr, "window closed\n");
             exit(0);
-        case SDL_KEYDOWN: if (!e.key.repeat) input_key_hid((int)e.key.keysym.scancode, 1); break;
+        case SDL_KEYDOWN: { static int first; if (!first++) fprintf(stderr, "keyboard: first key received (scancode %d)\n", (int)e.key.keysym.scancode); }
+            if (!e.key.repeat) input_key_hid((int)e.key.keysym.scancode, 1); break;
         case SDL_KEYUP: input_key_hid((int)e.key.keysym.scancode, 0); break;
         case SDL_MOUSEMOTION: dinput_mouse_move(e.motion.xrel, e.motion.yrel); break;
         case SDL_MOUSEBUTTONDOWN: case SDL_MOUSEBUTTONUP: {

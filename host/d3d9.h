@@ -1,7 +1,7 @@
-/* Direct3D 8 on the host: object model + full device state tracking. Rendering is delegated to a
+/* Direct3D 9 on the host: object model + full device state tracking. Rendering is delegated to a
  * backend (render.h); the headless backend only counts. */
-#ifndef RC_D3D8_H
-#define RC_D3D8_H
+#ifndef RC_D3D9_H
+#define RC_D3D9_H
 
 #include "com.h"
 
@@ -15,7 +15,7 @@ enum {
 };
 
 enum ResType { RT_SURFACE = 1, RT_VOLUME, RT_TEXTURE, RT_VOLUMETEXTURE, RT_CUBETEXTURE, RT_VERTEXBUFFER,
-               RT_INDEXBUFFER, RT_DEVICE = 100, RT_D3D, RT_SWAPCHAIN };
+               RT_INDEXBUFFER, RT_SHADER, RT_STATEBLOCK, RT_DEVICE = 100, RT_D3D, RT_SWAPCHAIN };
 
 typedef struct Texture {
     int type;                     /* RT_TEXTURE or RT_CUBETEXTURE */
@@ -37,6 +37,7 @@ typedef struct Surface {
     int face, level;
     int is_rt, is_depth;
     uint32_t gpu_id;              /* renderer's name for it (stable, never reused) */
+    uint32_t stretch_tex;         /* a texture object that exposes this render target to StretchRect */
     void *backend;
 } Surface;
 
@@ -53,6 +54,8 @@ typedef struct Shader {
     uint32_t *decl;  uint32_t decl_len;   /* vertex shaders: declaration tokens */
     uint32_t *code;  uint32_t code_len;   /* NULL for fixed-function declarations */
     void *backend;
+    uint32_t handle;                      /* odd table handle (shader_get) */
+    uint32_t *elems; uint32_t n_elems;    /* vertex declarations: the D3DVERTEXELEMENT9 array as given (8 bytes each) */
 } Shader;
 
 #define MAX_TS 512
@@ -66,7 +69,9 @@ typedef struct DevState {
     uint32_t light_enabled[8];
     float clip_plane[6][4];
     uint32_t texture[8];          /* guest texture objects */
-    uint32_t stream_vb[16], stream_stride[16];
+    uint32_t stream_vb[16], stream_stride[16], stream_offset[16];
+    uint32_t fvf, vdecl, vshader, pixel_shader_obj;   /* what the game set; vs/ps below are what the renderer reads */
+    uint32_t scissor[4];
     uint32_t ib, base_vertex;
     uint32_t vs, ps;              /* vertex shader handle or FVF; pixel shader handle */
     float vs_const[96][4];
@@ -83,6 +88,7 @@ typedef struct Device {
     uint32_t frame;
     uint32_t draws_this_frame;
     int recording_block;
+    int lost;
 } Device;
 
 Shader *shader_get(uint32_t handle);

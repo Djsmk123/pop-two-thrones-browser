@@ -2,7 +2,7 @@
 #ifndef RC_RENDER_H
 #define RC_RENDER_H
 
-#include "d3d8.h"
+#include "d3d9.h"
 
 typedef struct RenderBackend {
     const char *name;

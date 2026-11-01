@@ -432,15 +432,15 @@ static void on_mapped(WGPUMapAsyncStatus st, WGPUStringView msg, void *u1, void 
 
 /* Reads the back buffer back and writes it as a PNG (work recorded so far is submitted first). */
 #ifndef __EMSCRIPTEN__
-static void capture_png(const char *path) {
-    uint32_t w = (uint32_t)g_surf_w, h = (uint32_t)g_surf_h, stride = (w * 4 + 255) & ~255u;
+static void capture_tex(WGPUTexture tex, uint32_t w, uint32_t h, const char *path) {
+    uint32_t stride = (w * 4 + 255) & ~255u;
     WGPUBufferDescriptor bd = WGPU_BUFFER_DESCRIPTOR_INIT;
     bd.size = (uint64_t)stride * h;
     bd.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst;
     WGPUBuffer buf = wgpuDeviceCreateBuffer(g_dev, &bd);
     WGPUCommandEncoder enc = wgpuDeviceCreateCommandEncoder(g_dev, NULL);
     WGPUTexelCopyTextureInfo src = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-    src.texture = g_bb;
+    src.texture = tex;
     WGPUTexelCopyBufferInfo dst = WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
     dst.buffer = buf;
     dst.layout.bytesPerRow = stride;
@@ -464,7 +464,7 @@ static void capture_png(const char *path) {
     wgpuBufferDestroy(buf);
     wgpuBufferRelease(buf);
 }
-
+static void capture_png(const char *path) { capture_tex(g_bb, (uint32_t)g_surf_w, (uint32_t)g_surf_h, path); }
 
 #endif
 
@@ -506,7 +506,11 @@ static PsProgram *ps_program(uint32_t handle) {
     }
     PsProgram *p = calloc(1, sizeof *p);
     p->module = make_module(fs);
-    if (getenv("RC_DUMP_PS")) fprintf(stderr, "[ps %x]\n%s", handle, fs);
+    if (getenv("RC_DUMP_PS")) {
+        fprintf(stderr, "[ps %x] tokens:", handle);
+        for (uint32_t k = 0; k < sh->code_len; k++) fprintf(stderr, " %08x", sh->code[k]);
+        fprintf(stderr, "\n%s", fs);
+    }
     free(fs);
     sh->backend = p;
     return p;
@@ -679,8 +683,11 @@ static void begin_frame(void) {
 }
 
 /* Opens a render pass on the current target; clear flags: 1 color, 2 depth, 4 stencil. */
+static int g_scratch_clear;   /* the next pass runs on a scratch depth buffer: start it cleared (its old contents are another target's) */
 static void begin_pass(uint32_t clear, uint32_t color, float z, uint32_t stencil) {
     end_pass();
+    if (g_scratch_clear && getenv("RC_SCRATCH_CLEAR")) { clear |= 2 | 4; z = 1.f; stencil = 0; }
+    g_scratch_clear = 0;
     if (!g_enc) g_enc = wgpuDeviceCreateCommandEncoder(g_dev, NULL);
     WGPURenderPassColorAttachment ca = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
     ca.view = g_tgt_color ? g_tgt_color : g_bb_view;
@@ -752,6 +759,7 @@ static void exec_target(const CmdTarget *c) {
     if (color != (g_tgt_color ? g_tgt_color : g_bb_view) || depth != (g_tgt_depth ? g_tgt_depth : g_depth_view)) {
         end_pass();
         g_tgt_color = color; g_tgt_depth = depth;
+        if (c->color_id && !c->depth_id) g_scratch_clear = 1;
     }
     g_tgt_w = w; g_tgt_h = h; g_tgt_lw = c->lw; g_tgt_lh = c->lh; g_tgt_gs = gs;
 }
@@ -916,9 +924,24 @@ static void exec_clear(const CmdClear *c) {
 }
 
 static void exec_draw(const CmdDraw *c) {
+    {   /* RC_LOG_QUADS=1: log full-screen-style quads (4 or 6 vertices) */
+        static int q = -1; static int n;
+        if (q < 0) q = getenv("RC_LOG_QUADS") != NULL;
+        if (q && c->nverts <= 6 && n < 400) {
+            const CVert *v = (const CVert *)(c + 1);
+            n++;
+            fprintf(stderr, "[quad] flags0 %u vp %g,%g,%g,%g kinds %u,%u ids %u,%u ps %u verts (%g,%g,%g,%g) (%g,%g) (%g,%g) tc0 (%g,%g) (%g,%g)\n", c->u.flags[0], c->u.vp[0], c->u.vp[1], c->u.vp[2], c->u.vp[3],
+                    c->slot_kind[0], c->slot_kind[1], c->slot_id[0], c->slot_id[1], c->key.ps, v[0].x, v[0].y, v[0].z, v[0].w, v[1].x, v[1].y, v[2].x, v[2].y, v[0].tc[0][0], v[0].tc[0][1], v[2].tc[0][0], v[2].tc[0][1]);
+        }
+    }
     begin_frame();
     if (!g_pass) begin_pass(0, 0, 1.f, 0);
     uint32_t n = c->nverts, bytes = n * (uint32_t)sizeof(CVert);
+    {   /* debugging: RC_SUBMIT_EVERY=N submits the frame's work every N draws (as the per-draw capture does) */
+        static int every = -1, n;
+        if (every < 0) every = getenv("RC_SUBMIT_EVERY") ? atoi(getenv("RC_SUBMIT_EVERY")) : 0;
+        if (every && ++n >= every) { n = 0; submit(); begin_pass(0, 0, 1.f, 0); }
+    }
     if (g_vpos + bytes > VBUF_SIZE || g_upos + USTRIDE > UBUF_SIZE) { submit(); begin_pass(0, 0, 1.f, 0); }
 
     PsProgram *ps = c->key.ps ? ps_program(c->key.ps) : NULL;
@@ -928,6 +951,27 @@ static void exec_draw(const CmdDraw *c) {
         if (c->slot_kind[s] == TS_TEX) {
             GTex *g = obj_get(c->slot_id[s]);
             if (g) { g->used_in_batch = g_batch; views[s] = g->view; }
+        } else if (c->slot_kind[s] == TS_BACKBUF) {
+            /* the back buffer is sampled (through a copy of it) only while drawing into something else */
+            if (g_tgt_color && g_tgt_color != g_bb_view) {
+                static WGPUTexture copy; static WGPUTextureView copy_view; static uint32_t cw, ch;
+                if (!copy || cw != (uint32_t)g_surf_w || ch != (uint32_t)g_surf_h) {
+                    if (copy) { release_view(copy_view); wgpuTextureRelease(copy); }
+                    WGPUTextureDescriptor td = WGPU_TEXTURE_DESCRIPTOR_INIT;
+                    cw = (uint32_t)g_surf_w; ch = (uint32_t)g_surf_h;
+                    td.size = (WGPUExtent3D){ cw, ch, 1 }; td.format = g_surf_fmt;
+                    td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+                    copy = wgpuDeviceCreateTexture(g_dev, &td);
+                    copy_view = wgpuTextureCreateView(copy, NULL);
+                }
+                end_pass();
+                WGPUTexelCopyTextureInfo cs = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT, cd = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+                cs.texture = g_bb; cd.texture = copy;
+                WGPUExtent3D cex = { cw, ch, 1 };
+                wgpuCommandEncoderCopyTextureToTexture(g_enc, &cs, &cd, &cex);
+                begin_pass(0, 0, 1.f, 0);
+                views[s] = copy_view;
+            } else views[s] = g_black.view;
         } else if (c->slot_kind[s] == TS_RTSURF) {
             GSurf *gs = obj_get(c->slot_id[s]);
             /* a render-target texture is never sampled while it is being drawn into */
@@ -1018,7 +1062,14 @@ static void exec_present(const CmdPresent *c) {
     if (!g_pass && !g_enc) begin_pass(1, 0, 1.f, 0);   /* nothing drawn: present black */
     submit();
 #ifndef __EMSCRIPTEN__
-    if (c->screenshot) { char path[256]; snprintf(path, sizeof path, "/tmp/rc_frame_%u.png", c->frame); capture_png(path); }
+    if (c->screenshot) {
+        char path[256]; snprintf(path, sizeof path, "/tmp/rc_frame_%u.png", c->frame); capture_png(path);
+        if (getenv("RC_DUMP_RT")) {   /* also write that render target (a render-target surface id) */
+            uint32_t id = (uint32_t)atoi(getenv("RC_DUMP_RT"));
+            GSurf *gs = obj_get(id);
+            if (gs && !gs->depth) { snprintf(path, sizeof path, "/tmp/rc_rt%u_%u.png", id, c->frame); capture_tex(gs->tex, gs->w, gs->h, path); }
+        }
+    }
 #else
     (void)c;
 #endif
@@ -1074,6 +1125,18 @@ static void exec_present(const CmdPresent *c) {
 
 #ifndef __EMSCRIPTEN__
 void gpu_exec(const CmdHdr *h) {
+    {   /* RC_LOG_CMDS=1: a one-line summary of every non-draw command (and the draw count per frame in the Present line) */
+        static int log = -1; static unsigned draws;
+        if (log < 0) log = getenv("RC_LOG_CMDS") != NULL;
+        if (log) {
+            if (h->type == CMD_DRAW) draws++;
+            else if (h->type == CMD_PRESENT) { fprintf(stderr, "[cmd] present (%u draws)\n", draws); draws = 0; }
+            else if (h->type == CMD_TARGET) { const CmdTarget *t = (const CmdTarget *)h; fprintf(stderr, "[cmd] (%u draws so far) target color %u %ux%u depth %u logical %ux%u\n", draws, t->color_id, t->color_w, t->color_h, t->depth_id, t->lw, t->lh); }
+            else if (h->type == CMD_CLEAR) { const CmdClear *t = (const CmdClear *)h; fprintf(stderr, "[cmd] clear flags %x color %08x\n", t->flags, t->color); }
+            else if (h->type == CMD_UPLOAD_SURF) { const CmdUploadSurf *t = (const CmdUploadSurf *)h; fprintf(stderr, "[cmd] upload surface %u %ux%u\n", t->id, t->w, t->h_); }
+            else if (h->type == CMD_UPLOAD_TEX) { const CmdUploadTex *t = (const CmdUploadTex *)h; if (t->w[0] >= 256) fprintf(stderr, "[cmd] upload texture %u %ux%u\n", t->id, t->w[0], t->h_[0]); }
+        }
+    }
     switch (h->type) {
     case CMD_TARGET: exec_target((const CmdTarget *)h); break;
     case CMD_CLEAR: exec_clear((const CmdClear *)h); break;

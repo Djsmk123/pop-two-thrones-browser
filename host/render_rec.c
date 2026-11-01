@@ -322,17 +322,32 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
     (void)num_vertices;
     if (!prim_count) return;
     Shader *sh = (st->vs & 1) ? shader_get(st->vs) : NULL;   /* vertex shader handle (FVFs have bit 0 clear) */
-    if ((st->vs & 1) && !sh) return;
+    if ((st->vs & 1) && !sh) { if (g_snap_detail) fprintf(stderr, "[skip] unknown vertex shader %x n %u\n", st->vs, prim_count); return; }
+    {   /* debugging: RC_MAX_DRAWS=N drops every draw after the Nth of each frame */
+        static long maxd = -1;
+        if (maxd < 0) maxd = getenv("RC_MAX_DRAWS") ? atol(getenv("RC_MAX_DRAWS")) : 0;
+        if (maxd && g_f_drawn >= (uint32_t)maxd) { g_f_drawn++; return; }
+    }
     g_f_drawn++;
+    {   /* debugging: RC_SKIP_PS=<hex handle>: drop draws that use that pixel shader */
+        static long skip_ps = -1;
+        if (skip_ps < 0) skip_ps = getenv("RC_SKIP_PS") ? strtol(getenv("RC_SKIP_PS"), NULL, 16) : 0;
+        if (skip_ps && st->ps == (uint32_t)skip_ps) return;
+    }
+    {   /* debugging: RC_SKIP_UNTEXTURED=1 drops draws with no texture and plain diffuse colour (to see what is under them) */
+        static int skip = -1;
+        if (skip < 0) skip = getenv("RC_SKIP_UNTEXTURED") != NULL;
+        if (skip && !st->texture[0] && st->tss[0][1] == 3 && !st->ps) return;
+    }
     select_target(d);
     if (g_snap_detail) {
         Texture *t0 = com_data(st->texture[0]), *t1 = com_data(st->texture[1]);
         fprintf(stderr, "[draw] #%04u vs %x ps %x prim %u n %u | tex0 %s fmt %x tex1 %s fmt %x | tss0 op %u a %u,%u aop %u | "
-                "tss1 op %u | blend %u %u/%u atest %u\n", g_f_drawn - 1, st->vs, st->ps, prim, prim_count,
+                "tss1 op %u | blend %u %u/%u atest %u | tf %08x cw %x z %u/%u/%u cull %u stencil %u fn %u ref %u fail %u/%u/%u wmask %x vp %g %g %u,%u,%u,%u\n", g_f_drawn - 1, st->vs, st->ps, prim, prim_count,
                 t0 ? (t0->type == RT_TEXTURE ? "2d" : "cube") : "-", t0 ? t0->format : 0,
                 t1 ? (t1->type == RT_TEXTURE ? "2d" : "cube") : "-", t1 ? t1->format : 0,
                 st->tss[0][1], st->tss[0][2], st->tss[0][3], st->tss[0][4], st->tss[1][1], st->rs[27], st->rs[19],
-                st->rs[20], st->rs[15]);
+                st->rs[20], st->rs[15], st->rs[60], st->rs[168], st->rs[7], st->rs[14], st->rs[23], st->rs[22], st->rs[52], st->rs[56], st->rs[57], st->rs[53], st->rs[54], st->rs[55], st->rs[59], st->viewport.minz, st->viewport.maxz, st->viewport.x, st->viewport.y, st->viewport.w, st->viewport.h);
     }
 
     FvfLayout L;
@@ -342,8 +357,8 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
     if (vertices_up) { vb = vertices_up; stride = up_stride; }
     else {
         Buffer *b = com_data(st->stream_vb[0]);
-        if (!b && !sh) return;
-        if (b) vb = HP(b->mem);
+        if (!b && !sh) { if (g_snap_detail) fprintf(stderr, "[skip] no vertex buffer, fvf %x n %u\n", st->vs, prim_count); return; }
+        if (b) vb = HP(b->mem) + st->stream_offset[0];
         stride = st->stream_stride[0];
     }
     if (!stride && !sh) stride = L.stride;
@@ -369,7 +384,7 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
     case 6: topo = TOPO_TRIANGLES;
         for (uint32_t i = 0; i < prim_count; i++) { idx[n++] = IDX(0); idx[n++] = IDX(i + 1); idx[n++] = IDX(i + 2); }
         break;
-    default: free(idx); return;
+    default: if (g_snap_detail) fprintf(stderr, "[skip] primitive type %u n %u\n", prim, prim_count); free(idx); return;
     }
 #undef IDX
 
@@ -390,7 +405,7 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
         else
             for (int s = 0; s < 16; s++) {
                 Buffer *sb = com_data(st->stream_vb[s]);
-                if (sb) { vss.data[s] = HP(sb->mem); vss.stride[s] = st->stream_stride[s]; }
+                if (sb) { vss.data[s] = HP(sb->mem) + st->stream_offset[s]; vss.stride[s] = st->stream_stride[s]; }
             }
         float wv[16], ff_mvp[16];
         mat_mul(st->transform[256], st->transform[2], wv);
@@ -410,6 +425,24 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
             vs_trace = 0;
             CVert *v = use_range ? &tmp[i] : &cv[i];
             v->x = o.pos[0]; v->y = o.pos[1]; v->z = o.pos[2]; v->w = o.pos[3];
+            static long white = -1;
+            if (white < 0) white = getenv("RC_FORCE_WHITE") ? strtol(getenv("RC_FORCE_WHITE"), NULL, 16) : 0;   /* debugging: ignore the diffuse output (of vertex shader handle N, or all with 1) */
+            if (white && (white == 1 || (long)st->vs == white)) { o.d0[0] = o.d0[1] = o.d0[2] = 0.5f; o.d0[3] = 1.f; }
+            if (g_snap_detail && i == 0 && o.d0[0] + o.d0[1] + o.d0[2] < 0.05f) {
+                Buffer *b1 = com_data(st->stream_vb[1]);
+                fprintf(stderr, "[stream] draw %u vs %x: s0 vb %x off %u stride %u | s1 vb %x off %u stride %u size %u first bytes %08x %08x\n", g_f_drawn - 1, st->vs,
+                        st->stream_vb[0], st->stream_offset[0], st->stream_stride[0], st->stream_vb[1], st->stream_offset[1], st->stream_stride[1],
+                        b1 ? b1->size : 0, b1 ? R32(b1->mem + st->stream_offset[1]) : 0, b1 ? R32(b1->mem + st->stream_offset[1] + 4) : 0);
+            }
+            if (g_snap_detail && i == 0 && (st->vs == 0x100ef || st->vs == 0x1008f) && g_f_drawn - 1 < 200) {
+                fprintf(stderr, "[vsconst] draw %u vs %x:", g_f_drawn - 1, st->vs);
+                for (int k = 0; k < 96; k++) if (st->vs_const[k][0] != 0 || st->vs_const[k][1] != 0 || st->vs_const[k][2] != 0 || st->vs_const[k][3] != 0)
+                    fprintf(stderr, " c%d=(%g,%g,%g,%g)", k, st->vs_const[k][0], st->vs_const[k][1], st->vs_const[k][2], st->vs_const[k][3]);
+                fprintf(stderr, "\n");
+            }
+            if (g_snap_detail && i == 0)
+                fprintf(stderr, "[vsout] draw %u vs %x vertex %u: pos %g %g %g %g d0 %g %g %g %g tex0 %g %g\n", g_f_drawn - 1, st->vs,
+                        use_range ? lo : idx[0], o.pos[0], o.pos[1], o.pos[2], o.pos[3], o.d0[0], o.d0[1], o.d0[2], o.d0[3], o.tex[0][0], o.tex[0][1]);
             v->diffuse = pack_color(o.d0); v->specular = pack_color(o.d1);
             memcpy(v->tc, o.tex, sizeof v->tc);
         }
@@ -424,7 +457,8 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
         c->samp_key[s] = sampler_key(st->tss[s]);
         if (t && t->type == RT_TEXTURE && (t->usage & 1)) {
             Surface *s0 = t->surfaces[0][0] ? com_data(t->surfaces[0][0]) : NULL;
-            if (s0) { c->slot_kind[s] = TS_RTSURF; c->slot_id[s] = s0->gpu_id; }
+            if (s0 && t->surfaces[0][0] == d->backbuffer) c->slot_kind[s] = TS_BACKBUF;
+            else if (s0) { c->slot_kind[s] = TS_RTSURF; c->slot_id[s] = s0->gpu_id; }
         } else if (t && t->type == RT_TEXTURE) {
             c->slot_kind[s] = TS_TEX; c->slot_id[s] = t->gpu_id;
         }
@@ -464,6 +498,9 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
         }
     }
     memcpy(u->psc, st->ps_const, sizeof u->psc);
+    if (g_snap_detail && st->ps) fprintf(stderr, "[psc] draw %u ps %x c0=(%g,%g,%g,%g) c1=(%g,%g,%g,%g) rt %x tex0 %x tex1 %x\n", g_f_drawn - 1, st->ps,
+        st->ps_const[0][0], st->ps_const[0][1], st->ps_const[0][2], st->ps_const[0][3], st->ps_const[1][0], st->ps_const[1][1], st->ps_const[1][2], st->ps_const[1][3],
+        st->render_target, st->texture[0], st->texture[1]);
     for (int s = 0; s < 4; s++) {
         memcpy(u->bem[s], &st->tss[s][7], 16);        /* BUMPENVMAT00, 01, 10, 11 (float bits) */
         memcpy(&u->bel[s][0], &st->tss[s][22], 4);    /* BUMPENVLSCALE */
@@ -473,7 +510,9 @@ static void rec_draw_impl(Device *d, uint32_t prim, uint32_t prim_count, uint32_
     PKey k = { st->rs[27] != 0, st->rs[19], st->rs[20], st->rs[171] ? st->rs[171] : 1, st->rs[7] != 0 && st->depth_stencil,
                st->rs[14], st->rs[23], st->rs[22], st->rs[168] & 0xF, topo, st->ps };
     if (L.pos_type == 0x4) k.cull = 1;  /* keep 2D simple: no culling for pre-transformed vertices */
-    else if (k.cull == 2) k.cull = 3; else if (k.cull == 3) k.cull = 2;  /* D3D CW/CCW culls back/front with CW front */
+    /* D3DCULL_CW (2) culls clockwise triangles, which WebGPU front-face CW makes the front: cull modes map straight through
+       (swapping them dropped every back-facing surface: sky, sea, ground) */
+    { static int nc = -1; if (nc < 0) nc = getenv("RC_NO_CULL") != NULL; if (nc) k.cull = 1; }   /* debugging */  /* D3D CW/CCW culls back/front with CW front */
     c->key = k;
     c->vp[0] = (float)st->viewport.x; c->vp[1] = (float)st->viewport.y;
     c->vp[2] = (float)(st->viewport.w ? st->viewport.w : g_tgt_lw);
@@ -562,6 +601,37 @@ static void rec_draw(Device *d, uint32_t prim, uint32_t prim_count, uint32_t sta
                      const uint8_t *vertices_up, uint32_t up_stride, const void *indices, int index32, uint32_t start_index) {
     rec_enter();
     rec_draw_impl(d, prim, prim_count, start_vertex, num_vertices, vertices_up, up_stride, indices, index32, start_index);
+    {   /* RC_DUMP_AFTER=frame:draw[,draw...]: after those draws of that frame write the target (back buffer or render target) as /tmp/rc_after_<draw>.ppm */
+        static const char *spec = (const char *)1;
+        if (spec == (const char *)1) spec = getenv("RC_DUMP_AFTER");
+        if (spec) {
+            unsigned fr = 0, dr = 0; const char *p = spec;
+            while (*p) {
+                if (sscanf(p, "%u:%u", &fr, &dr) == 2 && fr == d->frame && dr == g_f_drawn - 1) {
+                    fprintf(stderr, "[dumpafter] atest %u func %u ref %u scissor %u rect %u,%u,%u,%u fog %u stencil %u draw %u: vs %x ps %x tex0 %x tex1 %x c0=(%g,%g,%g,%g) rs: blend %u src %u dst %u cw %x z %u/%u\n", d->st.rs[15], d->st.rs[25], d->st.rs[24], d->st.rs[174], d->st.scissor[0], d->st.scissor[1], d->st.scissor[2], d->st.scissor[3], d->st.rs[28], d->st.rs[52], dr, d->st.vs, d->st.ps, d->st.texture[0], d->st.texture[1],
+                            d->st.ps_const[0][0], d->st.ps_const[0][1], d->st.ps_const[0][2], d->st.ps_const[0][3], d->st.rs[27], d->st.rs[19], d->st.rs[20], d->st.rs[168], d->st.rs[7], d->st.rs[14]);
+                    extern Surface *g_last_stretch_dst;
+                    uint32_t tobj = d->st.render_target;
+                    Surface *t = getenv("RC_DUMP_AFTER_DST") ? g_last_stretch_dst : com_data(tobj);
+                    if (t && (t->mem || t == com_data(d->backbuffer))) {
+                        if (!t->mem) t->mem = heap_alloc(t->pitch * t->height + 16, 1);
+                        rec_leave(); g_render->readback(d, t); rec_enter();
+                        char path[64]; snprintf(path, sizeof path, "/tmp/rc_after_%u.ppm", dr);
+                        FILE *f = fopen(path, "wb");
+                        if (f) {
+                            fprintf(f, "P6\n%u %u\n255\n", t->width, t->height);
+                            for (uint32_t y = 0; y < t->height; y++) for (uint32_t x = 0; x < t->width; x++) {
+                                uint32_t px = R32(t->mem + y * t->pitch + x * 4);
+                                fputc((px >> 16) & 255, f); fputc((px >> 8) & 255, f); fputc(px & 255, f);
+                            }
+                            fclose(f);
+                        }
+                    }
+                }
+                p = strchr(p, ','); if (!p) break; p++;
+            }
+        }
+    }
     rec_leave();
 }
 static void rec_present(Device *d) { rec_enter(); rec_present_impl(d); rec_leave(); }

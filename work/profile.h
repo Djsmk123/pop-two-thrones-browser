@@ -15,4 +15,18 @@
  * e.g. { "SOFTWARE\\Vendor\\Game", "InstallDir", 1, PROFILE_GUEST_ROOT, 0 }, */
 #define PROFILE_REGISTRY
 
+/* Named mutexes that already exist when the game starts (as if a launcher had made them): "name", */
+#define PROFILE_EXISTING_MUTEXES "POP3Launcher",
+
+/* Hardware.INI is written by the launcher's hardware test: the display modes and formats the game may use */
+#define PROFILE_BUILTIN_INIS \
+    { "Hardware.INI", \
+      "[VIDEO]\n" \
+      "Resolutions=640,480,32,800,600,32,1024,768,32,1280,720,32,1280,960,32,1280,1024,32,1600,1200,32\n" \
+      "AdapterFormats=D3DFMT_X8R8G8B8\n" \
+      "TextureFormats=D3DFMT_A8R8G8B8,D3DFMT_X8R8G8B8,D3DFMT_R5G6B5,D3DFMT_A1R5G5B5,D3DFMT_X1R5G5B5,D3DFMT_P8," \
+      "D3DFMT_DXT1,D3DFMT_DXT3,D3DFMT_DXT5\n" \
+      "RenderTargets=D3DFMT_A8R8G8B8,D3DFMT_X8R8G8B8\n" \
+      "BufferDepths=D3DFMT_D24S8,D3DFMT_D24X8,D3DFMT_D16,D3DFMT_D32\n" },
+
 #endif

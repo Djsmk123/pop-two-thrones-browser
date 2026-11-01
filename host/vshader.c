@@ -45,11 +45,11 @@ static void parse_decl(VsProgram *p, const uint32_t *t, uint32_t n) {
         case 2:
             if (tok & 0x10000000u) offset += 4 * ((tok >> 16) & 0xF);   /* D3DVSD_SKIP */
             else {
-                uint32_t reg = tok & 0x1F, type = (tok >> 16) & 0xF;
+                uint32_t reg = tok & 0x1F, type = (tok >> 16) & 0x1F;
                 if (reg < 16) { p->in[reg].used = 1; p->in[reg].stream = (uint8_t)stream; p->in[reg].type = (uint8_t)type;
                                 p->in[reg].offset = (uint16_t)offset; }
-                static const uint8_t sz[8] = { 4, 8, 12, 16, 4, 4, 4, 8 };
-                offset += type < 8 ? sz[type] : 4;
+                static const uint8_t sz[17] = { 4, 8, 12, 16, 4, 4, 4, 8, 4, 4, 8, 4, 8, 4, 4, 4, 8 };   /* D3DDECLTYPE sizes */
+                offset += type < 17 ? sz[type] : 4;
             }
             break;
         case 4: {                                                    /* D3DVSD_CONST */
@@ -83,6 +83,7 @@ static int parse_code(VsProgram *p, const uint32_t *t, uint32_t n) {
         uint32_t tok = t[i++], op = tok & 0xFFFF;
         if (tok == 0x0000FFFFu) break;
         if (op == 0xFFFE) { i += (tok >> 16) & 0x7FFF; continue; }   /* comment */
+        if (op == 31) { i += 2; continue; }                         /* dcl_usage v#: the declaration is bound by d3d9.c */
         if (op == 81) {                                             /* def c#, f, f, f, f */
             uint32_t r = t[i] & 0x1FFF;
             if (r < 96) { memcpy(p->defs[r], &t[i + 1], 16); p->has_def[r] = 1; }
@@ -116,9 +117,9 @@ static VsProgram *program_for(Shader *sh) {
     else p->ok = parse_code(p, sh->code, sh->code_len);
     if (!p->ok) fprintf(stderr, "[vs] could not decode shader (version %08x)\n", sh->code ? sh->code[0] : 0);
     if (getenv("RC_DUMP_VS")) {   /* raw tokens, for offline disassembly */
-        fprintf(stderr, "[vsdump %p] decl", (void *)sh);
+        fprintf(stderr, "[vsdump %x] decl", sh->handle);
         for (uint32_t i = 0; i < sh->decl_len; i++) fprintf(stderr, " %08x", sh->decl[i]);
-        fprintf(stderr, "\n[vsdump %p] code", (void *)sh);
+        fprintf(stderr, "\n[vsdump %x] code", sh->handle);
         for (uint32_t i = 0; i < sh->code_len; i++) fprintf(stderr, " %08x", sh->code[i]);
         fprintf(stderr, "\n");
     }
@@ -141,6 +142,20 @@ static void fetch(const uint8_t *src, uint32_t type, float *o) {
     case 5: for (int k = 0; k < 4; k++) o[k] = src[k]; break;                                                 /* UBYTE4 */
     case 6: { int16_t s[2]; memcpy(s, src, 4); o[0] = s[0]; o[1] = s[1]; break; }                           /* SHORT2 */
     case 7: { int16_t s[4]; memcpy(s, src, 8); for (int k = 0; k < 4; k++) o[k] = s[k]; break; }            /* SHORT4 */
+    case 8: for (int k = 0; k < 4; k++) o[k] = src[k] / 255.f; break;                                          /* UBYTE4N */
+    case 9: { int16_t s[2]; memcpy(s, src, 4); for (int k = 0; k < 2; k++) o[k] = fmaxf(s[k] / 32767.f, -1.f); break; }   /* SHORT2N */
+    case 10: { int16_t s[4]; memcpy(s, src, 8); for (int k = 0; k < 4; k++) o[k] = fmaxf(s[k] / 32767.f, -1.f); break; } /* SHORT4N */
+    case 11: { uint16_t s[2]; memcpy(s, src, 4); for (int k = 0; k < 2; k++) o[k] = s[k] / 65535.f; break; }  /* USHORT2N */
+    case 12: { uint16_t s[4]; memcpy(s, src, 8); for (int k = 0; k < 4; k++) o[k] = s[k] / 65535.f; break; } /* USHORT4N */
+    case 13: { uint32_t v; memcpy(&v, src, 4); o[0] = (float)(v & 0x3FF); o[1] = (float)((v >> 10) & 0x3FF); o[2] = (float)((v >> 20) & 0x3FF); break; } /* UDEC3 */
+    case 14: { uint32_t v; memcpy(&v, src, 4);                                                             /* DEC3N */
+               for (int k = 0; k < 3; k++) { int x = (int)((v >> (10 * k)) & 0x3FF); if (x & 0x200) x -= 0x400; o[k] = fmaxf(x / 511.f, -1.f); } break; }
+    case 15: case 16: { uint16_t h[4]; memcpy(h, src, type == 15 ? 4 : 8);                                   /* FLOAT16_2/4 */
+               for (int k = 0; k < (type == 15 ? 2 : 4); k++) {
+                   uint32_t sg = (h[k] >> 15) & 1, ex = (h[k] >> 10) & 31, mn = h[k] & 1023;
+                   float f = ex == 0 ? ldexpf((float)mn, -24) : ex == 31 ? (mn ? NAN : INFINITY) : ldexpf((float)(mn | 1024), (int)ex - 25);
+                   o[k] = sg ? -f : f;
+               } break; }
     }
 }
 

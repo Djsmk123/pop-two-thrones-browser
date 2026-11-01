@@ -1297,7 +1297,9 @@ class Program:
                 # Further functions inside the same gap: MSVC pads between functions with int3 and
                 # aligns starts to 16, so a 16-aligned address right after int3 padding is a start.
                 for x in range((g + 15) & ~15, a, 16):
-                    if (self.img[x - 1 - self.base] == 0xCC and self.img[x - self.base] not in (0xCC, 0x90)
+                    # (or right after a switch table of code pointers, which is how MSVC lays them out in .text)
+                    if ((self.img[x - 1 - self.base] == 0xCC or tlo <= rd(x - 4) < thi)
+                            and self.img[x - self.base] not in (0xCC, 0x90)
                             and x not in self.entries and x not in cands):
                         insns = list(md.disasm(self.code(x, a), x, count=4))
                         if len(insns) >= 3 or (insns and insns[-1].mnemonic in ("ret", "jmp")):
@@ -1329,22 +1331,34 @@ class Program:
             e = todo.pop()
             k = bisect.bisect_right(ordered_g, e)
             span_end = ordered_g[k] if k < len(ordered_g) else thi
-            for ins in md.disasm(self.code(e, span_end), e):
-                m = ins.mnemonic
-                if m in ("push", "mov", "lea") and ins.operands and ins.operands[-1].type == CS_OP_IMM:
-                    v = ins.operands[-1].imm & 0xffffffff
-                    if tlo <= v < thi and v not in self.entries and v not in seen and v not in jt:
-                        nxt = next(md.disasm(self.code(v, v + 16), v, count=1), None)
-                        if nxt is not None:
-                            cands.add(v); seen.add(v); todo.append(v)
-                if (m in ("jmp", "call") or (m.startswith("j") and m[1:] in COND)) and ins.operands \
-                        and ins.operands[0].type == CS_OP_IMM:
-                    t = ins.operands[0].imm & 0xffffffff
-                    outside = not (e <= t < span_end) or m == "call"
-                    if tlo <= t < thi and outside and t not in self.entries and t not in seen:
-                        cands.add(t); seen.add(t); todo.append(t)
-                if m in ("ret", "retn", "jmp", "int3"):
-                    break
+            # follow control flow inside [e, span_end): code after an unconditional jmp/ret is still part of
+            # the function when an earlier branch targets it (the CRT's pow helpers are laid out that way)
+            walk, visited = [e], set()
+            while walk:
+                a = walk.pop()
+                if a in visited or not (e <= a < span_end):
+                    continue
+                for ins in md.disasm(self.code(a, span_end), a):
+                    if ins.address in visited:
+                        break
+                    visited.add(ins.address)
+                    m = ins.mnemonic
+                    if m in ("push", "mov", "lea") and ins.operands and ins.operands[-1].type == CS_OP_IMM:
+                        v = ins.operands[-1].imm & 0xffffffff
+                        if tlo <= v < thi and v not in self.entries and v not in seen and v not in jt:
+                            nxt = next(md.disasm(self.code(v, v + 16), v, count=1), None)
+                            if nxt is not None:
+                                cands.add(v); seen.add(v); todo.append(v)
+                    if (m in ("jmp", "call") or (m.startswith("j") and m[1:] in COND)) and ins.operands \
+                            and ins.operands[0].type == CS_OP_IMM:
+                        t = ins.operands[0].imm & 0xffffffff
+                        outside = not (e <= t < span_end) or m == "call"
+                        if tlo <= t < thi and outside and t not in self.entries and t not in seen:
+                            cands.add(t); seen.add(t); todo.append(t)
+                        if m != "call" and not outside:
+                            walk.append(t)
+                    if m in ("ret", "retn", "jmp", "int3"):
+                        break
         ordered = sorted(self.entries | cands)
         for t in cands:
             nxt = ordered[ordered.index(t) + 1] if t != ordered[-1] else thi

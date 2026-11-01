@@ -44,6 +44,7 @@ static uint32_t build_vtable(ComInterface *it) {
         W32(vt + 4u * (uint32_t)i, magic);
     }
     it->vtable = vt;
+    if (g_log_d3d) fprintf(stderr, "[com] vtable for %s at %08x (%d slots)\n", it->name, vt, it->count);
     return vt;
 }
 
