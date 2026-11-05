@@ -30,6 +30,10 @@
   #tpad .c.tog { background: rgba(20, 18, 14, .42); }
   #tpad .c.tog.on { background: rgba(240, 201, 112, .55); border-color: #f0c970; }
   body.touch-play canvas { touch-action: none; }
+  #tpad .toast { position: absolute; left: 50%; top: calc(var(--u) * 1.2); transform: translateX(-50%); padding: 6px 14px; border-radius: 99px;
+    background: rgba(0, 0, 0, .7); color: #fff; font: 600 calc(var(--u) * .3)/1.2 ui-sans-serif, system-ui, sans-serif; opacity: 0;
+    transition: opacity .3s ease; pointer-events: none; white-space: nowrap; }
+  #tpad .toast.on { opacity: 1; }
   #tkb { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: .01; border: 0; padding: 0; font-size: 16px; z-index: 4; }
   #tpad .b { width: calc(var(--u) * 1.15); height: calc(var(--u) * 1.15); border-radius: 50%; }
   #tpad .s { width: calc(var(--u) * 1.5); height: calc(var(--u) * .62); border-radius: 99px; font-size: calc(var(--u) * .26); }
@@ -54,6 +58,7 @@
   const B = (bit, label, cls, pos) => `<div class="c ${cls}" data-bit="${bit}" style="${pos}">${label}</div>`;
   const u = 'var(--u)';
   pad.innerHTML = [
+    '<div class="toast"></div>',
     '<div class="c stick l" data-stick="0" style="left:calc(' + u + '*.7);bottom:calc(' + u + '*.6)"><i></i></div>',
     '<div class="c stick r" data-stick="1" style="right:calc(' + u + '*5.1);bottom:calc(' + u + '*.4)"><i></i></div>',
     B(6, 'L2', 'sh', `left:calc(${u}*.5);top:calc(${u}*.4)`),
@@ -80,6 +85,16 @@
   const stickVal = [[0, 0], [0, 0]];
   let cursorMode = true;   // menus first: the left stick moves the cursor and ✕ clicks; switch off to walk
   const game = () => window.recomp;
+  let toastT;
+  const setCursorMode = (on, msg) => {
+    cursorMode = on;
+    pad.querySelector('[data-act="cursor"]').classList.toggle('on', on);
+    stickVal[0] = [0, 0]; publish();
+    const t = pad.querySelector('.toast');
+    t.textContent = msg || (on ? 'Cursor mode: left stick moves the pointer' : 'Walk mode: left stick moves the Prince');
+    t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2200);
+  };
+  const GAMEPLAY_BITS = [2, 3, 4, 5, 6, 7];   // □ △ L1 R1 L2 R2: never used to drive a menu, so pressing one means play has started
   const setBit = (bit, on) => {
     api.buttons = on ? api.buttons | (1 << bit) : api.buttons & ~(1 << bit);
     if (bit === 0 && cursorMode) game()?._input_mouse_button(0, on ? 1 : 0);
@@ -107,6 +122,7 @@
       moveStick(el, h, e);
     } else {
       const bit = +el.dataset.bit;
+      if (cursorMode && GAMEPLAY_BITS.includes(bit)) setCursorMode(false, 'Walk mode: left stick moves the Prince');
       held.set(e.pointerId, { el, bit });
       setBit(bit, true);
       navigator.vibrate?.(8);
@@ -215,7 +231,7 @@
     const el = e.target.closest('[data-act]');
     if (!el) return;
     if (el.dataset.act === 'kb') { if (document.activeElement === kb) kb.blur(); else { kb.value = ''; prev = ''; kb.focus(); } }
-    else { cursorMode = !cursorMode; curBtn.classList.toggle('on', cursorMode); stickVal[0] = [0, 0]; publish(); }
+    else setCursorMode(!cursorMode);
   });
 
   const portrait = matchMedia('(orientation: portrait)');
