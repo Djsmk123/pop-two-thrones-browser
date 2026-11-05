@@ -4,7 +4,7 @@
 set -e
 R=$(cd "$(dirname "$0")" && pwd)
 rm -rf "$R/site"; mkdir -p "$R/site/build"
-cp "$R"/web/index.html "$R"/web/loader.js "$R"/web/audio-worklet.js "$R/site/"
+cp "$R"/web/index.html "$R"/web/loader.js "$R"/web/audio-worklet.js "$R"/web/touch.js "$R/site/"
 cp "$R"/build_web/www/recomp.js "$R"/build_web/www/recomp.wasm "$R/site/build/"
 cp "$R/web/serve.py" "$R/site/serve.py"
 python3 - "$R/site/serve.py" <<'P'

@@ -210,8 +210,12 @@ function pollGamepads(M) {
   }
   for (let slot = 0; slot < PAD_SLOTS; slot++) {
     const g = pads.find((p) => p.index === padSlotIndex[slot]);
-    const { buttons, ax } = g ? readPad(g) : { buttons: 0, ax: [0, 0, 0, 0] };
-    const connected = g ? 1 : 0;
+    let { buttons, ax } = g ? readPad(g) : { buttons: 0, ax: [0, 0, 0, 0] };
+    let connected = g ? 1 : 0;
+    if (!g && slot === 0 && window.rcTouch?.active) {   // the on-screen controller (web/touch.js) is pad 0 unless a real pad is there
+      const t = window.rcTouch.state();
+      buttons = t.buttons; ax = t.ax.map(axis16); connected = 1;
+    }
     const key = `${connected}:${buttons}:${ax.join(',')}`;
     if (key === padLast[slot]) continue;
     padLast[slot] = key;
