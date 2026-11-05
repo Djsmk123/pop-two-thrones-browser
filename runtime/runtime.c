@@ -259,6 +259,23 @@ void WF80(uint32_t a, double v) {
     W16(a + 8, se);
 }
 
+/* FNSAVE / FRSTOR, 32-bit protected-mode layout: CW, SW, TW, FIP, FCS, FOO, FOS (28 bytes), then ST(0..7) as
+   80-bit values. FNSAVE then reinitialises the FPU. Registers are always written as valid (tag 0). */
+void fpu_save(CPU *c, uint32_t a) {
+    W32(a, c->fpu_cw); W32(a + 4, (uint16_t)((c->fpu_sw & ~0x3800) | ((c->top & 7) << 11))); W32(a + 8, 0);
+    W32(a + 12, 0); W32(a + 16, 0); W32(a + 20, 0); W32(a + 24, 0);
+    for (int i = 0; i < 8; i++) WF80(a + 28 + 10 * i, ST(i));
+    c->fpu_cw = 0x037f; c->fpu_sw = 0; fpu_sync_rounding(c);
+}
+int fpu_restore(CPU *c, uint32_t a) {
+    c->fpu_cw = R16(a); fpu_sync_rounding(c);
+    uint16_t sw = R16(a + 4);
+    c->fpu_sw = sw & ~0x3800;
+    int top = (sw >> 11) & 7;
+    for (int i = 0; i < 8; i++) c->st[(top + i) & 7] = RF80(a + 28 + 10 * i);
+    return top;
+}
+
 /* ------------------------------------------------------------------ CPUID / RDTSC */
 
 void cpuid(CPU *c) {

@@ -93,7 +93,7 @@ _WRITES = [   # (pattern, bits, or a function of the match giving the bits)
     (re.compile(r"\bmem(?:cpy|set)\((?:\(uint8_t \*\))?&M_\[(\d)\]"), lambda m: MM_BIT[int(m.group(1))]),
 ]
 # helpers that receive the CPU but read only state that stays there (the control word, written through)
-_CPU_ONLY = {"fpu_to_int32", "fpu_to_int64", "fpu_round", "fpu_sync_rounding"}
+_CPU_ONLY = {"fpu_to_int32", "fpu_to_int64", "fpu_round", "fpu_sync_rounding", "fpu_save", "fpu_restore"}
 _GOTO = re.compile(r"goto L_([0-9a-f]{8});")
 
 
@@ -921,6 +921,10 @@ class FunctionTranslator:
             return f"W16({self.addr(ins, o[0])}, c->fpu_cw);"
         if m == "fldcw":
             return f"c->fpu_cw = R16({self.addr(ins, o[0])}); fpu_sync_rounding(c);"
+        if m in ("fnsave", "fsave"):    # mentions c->top so the cached stack is written back first and reloaded after
+            return f"fpu_save(c, {self.addr(ins, o[0])}); c->top = 0;"
+        if m == "frstor":
+            return f"c->top = fpu_restore(c, {self.addr(ins, o[0])});"
         if m in ("fnclex", "fclex"):
             return "c->fpu_sw &= 0x7f00;"
         if m in ("fninit", "finit"):
@@ -1273,6 +1277,21 @@ class Program:
                 v = int.from_bytes(self.img[va - self.base:va - self.base + 4], "little")
                 if accept(v) or unowned_code(v):
                     cands.add(v)
+            # Tables of code pointers that start off the 4-byte grid (the CRT's x87 math descriptors: a name
+            # byte, flags, then the handler addresses): scan the other three phases, and only keep a hit that
+            # has a neighbour (a run of two or more), so stray byte patterns don't become entry points.
+            for phase in (1, 2, 3):
+                run = []
+                for va in range(a + phase, b - 3, 4):
+                    v = int.from_bytes(self.img[va - self.base:va - self.base + 4], "little")
+                    if accept(v) or unowned_code(v):
+                        run.append(v)
+                        continue
+                    if len(run) >= 2:
+                        cands.update(run)
+                    run = []
+                if len(run) >= 2:
+                    cands.update(run)
         # Function-pointer tables can also sit inside .text (e.g. right after a switch table); only take
         # targets on known instruction boundaries or that look like function starts.
         rd = lambda va: int.from_bytes(self.img[va - self.base:va - self.base + 4], "little")

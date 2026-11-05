@@ -296,6 +296,8 @@ double fpu_round(CPU *c, double v);      /* FRNDINT */
    stores, precision rounding and arithmetic round like the original (the game uses "chop" mode for
    fast float->int conversion). Generated code is compiled with -frounding-math. */
 void fpu_sync_rounding(CPU *c);
+void fpu_save(CPU *c, uint32_t a);   /* FNSAVE (then resets the FPU) */
+int fpu_restore(CPU *c, uint32_t a); /* FRSTOR; returns the restored TOP */
 
 /* ------------------------------------------------------------------ CPU identification */
 void cpuid(CPU *c);   /* reports a plain Pentium-class CPU: no MMX/SSE/3DNow!, so the game takes x87 paths */
